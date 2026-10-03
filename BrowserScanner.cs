@@ -68,7 +68,7 @@ public sealed class BrowserScanner : IAsyncDisposable
           return { href:a.href, text:title, fullText:text, price, image, postal, location, dataTestId:a.getAttribute('data-testid')||'', externalId:card.getAttribute?.('data-articleid')||'' };
         }).filter(x => x.href && x.text.length > 4)
         """);
-            var pageItems=raw.Where(x => IsListingUrl(job.Platform, x.Href) && IsOrganicResult(job.Platform, x.DataTestId)).Select(x =>
+            var pageItems=raw.Where(x => IsListingUrl(job.Platform, x.Href) && IsOrganicResult(job.Platform, x.DataTestId) && (job.Platform!="Quoka"||!string.IsNullOrWhiteSpace(x.ExternalId))).Select(x =>
             {
                 var clean = x.Href.Split('#','?')[0].TrimEnd('/'); var id = string.IsNullOrWhiteSpace(x.ExternalId)?ExtractId(job.Platform,clean):x.ExternalId;
                 var itemTitle = x.Text.Length > 180 ? x.Text[..180] : x.Text;
