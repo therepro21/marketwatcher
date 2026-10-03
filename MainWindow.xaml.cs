@@ -54,19 +54,19 @@ public partial class MainWindow : Window
         var recipientIds=string.Join(',',_repo.GetWhatsApp().Recipients.Where(x=>x.Enabled).Select(x=>x.Id));
         var telegramIds=string.Join(',',_repo.GetTelegram().Recipients.Where(x=>x.Enabled).Select(x=>x.Id));
         var job=new SearchJob{Name=string.IsNullOrWhiteSpace(NameBox.Text)?UrlAnalyzer.GuessName(uri):NameBox.Text.Trim(),Url=uri.ToString(),Platform=UrlAnalyzer.Platform(uri),IntervalSeconds=seconds,Enabled=true,Status="Neu – erster Lauf wird Basisbestand",MatchMode=matchMode,RecipientIds=recipientIds,TelegramRecipientIds=telegramIds};
-        job.Id=_repo.AddJob(job);RefreshJobs();UrlBox.Clear();NameBox.Clear();AddLog($"Suche hinzugefügt: {job.Name}");await _watcher.RunJobAsync(job.Id,true);
+        job.Id=_repo.AddJob(job);_watcher.NotifyScheduleChanged();RefreshJobs();UrlBox.Clear();NameBox.Clear();AddLog($"Suche hinzugefügt: {job.Name}");await _watcher.RunJobAsync(job.Id,true);
     }
     private async void RunNow_Click(object sender,RoutedEventArgs e){if(SearchGrid.SelectedItem is SearchJob j)await _watcher.RunJobAsync(j.Id,false);}
     private async void Toggle_Click(object sender,RoutedEventArgs e)
     {
         if(SearchGrid.SelectedItem is not SearchJob job){MessageBox.Show("Bitte zuerst eine Suche auswählen.");return;}
-        if(job.Enabled){_repo.SetEnabled(job.Id,false);AddLog($"{job.Name}: pausiert.");RefreshJobs();return;}
+        if(job.Enabled){_repo.SetEnabled(job.Id,false);_watcher.NotifyScheduleChanged();AddLog($"{job.Name}: pausiert.");RefreshJobs();return;}
         var answer=MessageBox.Show("Soll MarketWatcher auch alle während der Pause verpassten Treffer melden?\n\nJa = verpasste Treffer sofort melden\nNein = aktuellen Stand still übernehmen und erst ab jetzt melden\nAbbrechen = pausiert lassen","Suche fortsetzen",MessageBoxButton.YesNoCancel,MessageBoxImage.Question);
         if(answer==MessageBoxResult.Cancel)return;
-        if(answer==MessageBoxResult.Yes){_repo.SetEnabled(job.Id,true);RefreshJobs();await _watcher.RunJobAsync(job.Id,false);}
+        if(answer==MessageBoxResult.Yes){_repo.SetEnabled(job.Id,true);_watcher.NotifyScheduleChanged();RefreshJobs();await _watcher.RunJobAsync(job.Id,false);}
         else await _watcher.ResumeFromNowAsync(job.Id);
     }
-    private void Delete_Click(object sender,RoutedEventArgs e){if(SearchGrid.SelectedItem is not SearchJob j)return;if(MessageBox.Show($"Suche „{j.Name}“ löschen? Die globale Ausschlussdatenbank bleibt erhalten.","Löschen",MessageBoxButton.YesNo)==MessageBoxResult.Yes){_repo.DeleteJob(j.Id);RefreshJobs();}}
+    private void Delete_Click(object sender,RoutedEventArgs e){if(SearchGrid.SelectedItem is not SearchJob j)return;if(MessageBox.Show($"Suche „{j.Name}“ löschen? Die globale Ausschlussdatenbank bleibt erhalten.","Löschen",MessageBoxButton.YesNo)==MessageBoxResult.Yes){_repo.DeleteJob(j.Id);_watcher.NotifyScheduleChanged();RefreshJobs();}}
     private void Email_Click(object sender,RoutedEventArgs e){new EmailSettingsWindow(_repo,_watcher){Owner=this}.ShowDialog();AutoStartBox.IsChecked=AutoStartManager.IsEnabled();}
     private void AssignRecipients_Click(object sender,RoutedEventArgs e)
     {

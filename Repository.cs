@@ -43,6 +43,7 @@ public sealed class Repository(string stateFile)
     public void UpdateRecipients(long id,string whatsappIds,string telegramIds)=>ChangeJob(id,x=>{x.RecipientIds=whatsappIds;x.TelegramRecipientIds=telegramIds;});
     public void DeleteJob(long id){lock(_sync){_state.Jobs.RemoveAll(x=>x.Id==id);SaveLocked();}}
     public void UpdateRun(long id,bool initialized,string status)=>ChangeJob(id,x=>{x.Initialized=initialized;x.LastRunUtc=DateTime.UtcNow;x.Status=status;});
+    public void SetLastNewResult(long id,DateTime utc)=>ChangeJob(id,x=>x.LastNewResultUtc=utc);
     private void ChangeJob(long id,Action<SearchJob> change){lock(_sync){var job=_state.Jobs.FirstOrDefault(x=>x.Id==id);if(job is null)return;change(job);SaveLocked();}}
     public bool AddSeen(long jobId,string fingerprint,Listing item,bool notified)
     {

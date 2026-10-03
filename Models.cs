@@ -10,6 +10,7 @@ public sealed class SearchJob
     public bool Enabled { get; set; } = true;
     public bool Initialized { get; set; }
     public DateTime? LastRunUtc { get; set; }
+    public DateTime? LastNewResultUtc { get; set; }
     public string Status { get; set; } = "Neu";
     public string MatchMode { get; set; } = "title";
     public bool SendToFirst { get; set; } = true;
@@ -17,6 +18,7 @@ public sealed class SearchJob
     public string RecipientIds { get; set; } = "recipient-1,recipient-2";
     public string TelegramRecipientIds { get; set; } = "";
     public int SeenCount { get; set; }
+    public string SearchNumber => $"#{Id}";
     public string IntervalLabel => $"{IntervalSeconds} s";
     public string MatchModeLabel => MatchMode == "title_or_content" ? "Titel oder Inhalt" : "Nur Titel";
     public string RecipientsLabel => RecipientIds.Split(',',StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries).Length switch {0=>"Keine",1=>"1 Person",var n=>$"{n} Personen"};

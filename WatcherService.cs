@@ -5,7 +5,7 @@ public sealed class WatcherService : IAsyncDisposable
     public event Action<BrowserChallengeException>? ManualInterventionRequired;
     private readonly Repository _repo; private readonly Action<string> _log; private readonly Action _refresh;
     private readonly BrowserScanner _scanner = new(); private readonly CancellationTokenSource _stop = new();
-    private readonly SemaphoreSlim _gate = new(1,1); private Task? _loop;
+    private readonly SemaphoreSlim _gate = new(1,1);private readonly SemaphoreSlim _wake = new(0,1); private Task? _loop;
     public WatcherService(Repository repo, Action<string> log, Action refresh){_repo=repo;_log=log;_refresh=refresh;}
     public Task StartAsync(){_loop=LoopAsync();return Task.CompletedTask;}
     private async Task LoopAsync()
@@ -15,42 +15,55 @@ public sealed class WatcherService : IAsyncDisposable
             var jobs=_repo.GetJobs().Where(x=>x.Enabled).ToList();
             foreach(var j in jobs.Where(x=>x.LastRunUtc is null || DateTime.UtcNow-x.LastRunUtc.Value>=TimeSpan.FromSeconds(x.IntervalSeconds)))
                 await RunJobAsync(j.Id,false);
-            // Sleep until work can actually become due (capped so UI changes are
-            // noticed promptly) instead of waking the process every second.
+            // Sleep until work is actually due. UI changes signal _wake, so an
+            // idle installation consumes no CPU through periodic polling.
             var enabled=_repo.GetJobs().Where(x=>x.Enabled).ToList();
-            var wait=enabled.Count==0?TimeSpan.FromSeconds(30):enabled
+            if(enabled.Count==0)
+            {
+                try{await _wake.WaitAsync(_stop.Token);}catch(OperationCanceledException){break;}
+                continue;
+            }
+            var wait=enabled
                 .Select(x=>x.LastRunUtc is null?TimeSpan.Zero:TimeSpan.FromSeconds(x.IntervalSeconds)-(DateTime.UtcNow-x.LastRunUtc.Value))
-                .Select(x=>x<TimeSpan.Zero?TimeSpan.Zero:x).DefaultIfEmpty(TimeSpan.FromSeconds(30)).Min();
+                .Select(x=>x<TimeSpan.Zero?TimeSpan.Zero:x).Min();
             if(wait<TimeSpan.FromMilliseconds(250))wait=TimeSpan.FromMilliseconds(250);
-            if(wait>TimeSpan.FromSeconds(30))wait=TimeSpan.FromSeconds(30);
-            try{await Task.Delay(wait,_stop.Token);}catch(OperationCanceledException){break;}
+            try{await _wake.WaitAsync(wait,_stop.Token);}catch(OperationCanceledException){break;}
         }
     }
+    public void NotifyScheduleChanged(){if(_wake.CurrentCount==0)_wake.Release();}
     public async Task RunJobAsync(long id,bool added)
     {
         if(!await _gate.WaitAsync(0)){_log("Ein Suchlauf ist bereits aktiv.");return;}
         try
         {
-            var job=_repo.GetJob(id); if(job is null)return; _log($"Prüfe {job.Name} …");
+            var job=_repo.GetJob(id); if(job is null)return; _log($"SUCHE #{job.Id} · PORTAL: {job.Platform} · SUCHBEGRIFF: {job.Name} · Prüfung läuft …");
             var items=await _scanner.ScanAsync(job); var initial=!job.Initialized; var fresh=new List<Listing>();
             if(_repo.GetJob(id)?.Enabled!=true){_log($"{job.Name}: Prüfung abgebrochen, weil die Suche pausiert wurde.");return;}
             foreach(var item in items) if(_repo.AddSeen(job.Id,BrowserScanner.Fingerprint(job.Platform,item),item,!initial)) fresh.Add(item);
-            if(initial){_repo.UpdateRun(job.Id,true,$"Basisbestand: {items.Count} Treffer");_log($"{job.Name}: {items.Count} bestehende Treffer ausgeschlossen.");}
-            else if(fresh.Count==0){_repo.UpdateRun(job.Id,true,$"Keine Änderungen · {items.Count} Treffer");_log($"{job.Name}: nichts Neues.");}
+            if(initial){var now=DateTime.UtcNow;_repo.SetLastNewResult(job.Id,now);var status=$"PORTAL: {job.Platform} · SUCHBEGRIFF: {job.Name} · Basisbestand: {items.Count} Treffer";_repo.UpdateRun(job.Id,true,status);_log($"SUCHE #{job.Id} · {status}");}
+            else if(fresh.Count==0){var since=FormatElapsed(DateTime.UtcNow-(job.LastNewResultUtc??job.LastRunUtc??DateTime.UtcNow));var status=$"PORTAL: {job.Platform} · SUCHBEGRIFF: {job.Name} · Seit {since} keine neuen Ergebnisse · {items.Count} aktuelle Treffer";_repo.UpdateRun(job.Id,true,status);_log($"SUCHE #{job.Id} · {status}");}
             else
             {
                 var errors=await SendNotificationsAsync(job,fresh);
-                _repo.UpdateRun(job.Id,true,errors.Count==0?$"{fresh.Count} neue Treffer gemeldet":$"{fresh.Count} neu · {errors.Count} Meldefehler");
-                _log($"{job.Name}: {fresh.Count} neue Treffer."+(errors.Count==0?"":$" Fehler: {string.Join(" | ",errors)}"));
+                _repo.SetLastNewResult(job.Id,DateTime.UtcNow);var status=$"PORTAL: {job.Platform} · SUCHBEGRIFF: {job.Name} · {fresh.Count} neue Ergebnisse"+(errors.Count==0?" und gemeldet":$" · {errors.Count} Meldefehler");_repo.UpdateRun(job.Id,true,status);
+                _log($"SUCHE #{job.Id} · {status}"+(errors.Count==0?"":$" · {string.Join(" | ",errors)}"));
             }
         }
-        catch(BrowserChallengeException ex){_repo.UpdateRun(id,true,"Pausiert: Eingabe erforderlich");_repo.SetEnabled(id,false);_log(ex.Message);ManualInterventionRequired?.Invoke(ex);}
-        catch(Exception ex){_repo.UpdateRun(id,_repo.GetJob(id)?.Initialized??false,"Fehler: "+ex.Message);_log("Fehler: "+ex.Message);}
+        catch(BrowserChallengeException ex){var failed=_repo.GetJob(id);_repo.UpdateRun(id,true,$"PORTAL: {failed?.Platform??ex.Platform} · SUCHBEGRIFF: {failed?.Name??ex.SearchName} · Pausiert: {ex.Message}");_repo.SetEnabled(id,false);_log($"SUCHE #{id} · PORTAL: {ex.Platform} · SUCHBEGRIFF: {ex.SearchName} · {ex.Message}");ManualInterventionRequired?.Invoke(ex);}
+        catch(Exception ex){var failed=_repo.GetJob(id);_repo.UpdateRun(id,failed?.Initialized??false,$"PORTAL: {failed?.Platform??"Unbekannt"} · SUCHBEGRIFF: {failed?.Name??"Unbekannt"} · Fehler: {ex.Message}");_log($"SUCHE #{id} · PORTAL: {failed?.Platform??"Unbekannt"} · SUCHBEGRIFF: {failed?.Name??"Unbekannt"} · FEHLER: {ex.Message}");}
         finally
         {
             try{await _scanner.CloseAsync();}catch(Exception ex){_log("Browser konnte nicht vollständig geschlossen werden: "+ex.Message);}
             _gate.Release();_refresh();
         }
+    }
+    private static string FormatElapsed(TimeSpan elapsed)
+    {
+        if(elapsed<TimeSpan.Zero)elapsed=TimeSpan.Zero;
+        if(elapsed.TotalMinutes<1)return "weniger als 1 Min.";
+        if(elapsed.TotalDays>=1)return $"{(int)elapsed.TotalDays} Tg. {elapsed.Hours} Std. {elapsed.Minutes} Min.";
+        if(elapsed.TotalHours>=1)return $"{(int)elapsed.TotalHours} Std. {elapsed.Minutes} Min.";
+        return $"{elapsed.Minutes} Min.";
     }
     public async Task ResumeFromNowAsync(long id)
     {
@@ -62,7 +75,7 @@ public sealed class WatcherService : IAsyncDisposable
             var items=await _scanner.ScanAsync(job);
             foreach(var item in items)_repo.AddSeen(job.Id,BrowserScanner.Fingerprint(job.Platform,item),item,false);
             _repo.UpdateRun(job.Id,true,$"Fortgesetzt ab jetzt · {items.Count} aktuelle Treffer ausgeschlossen");
-            _repo.SetEnabled(job.Id,true);_log($"{job.Name}: fortgesetzt; Meldungen gelten ab jetzt.");
+            _repo.SetEnabled(job.Id,true);NotifyScheduleChanged();_log($"{job.Name}: fortgesetzt; Meldungen gelten ab jetzt.");
         }
         catch(Exception ex){_repo.SetEnabled(id,false);_log("Fortsetzen fehlgeschlagen: "+ex.Message);}
         finally{try{await _scanner.CloseAsync();}catch{} _gate.Release();_refresh();}
@@ -124,9 +137,10 @@ public sealed class WatcherService : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _stop.Cancel();
+        NotifyScheduleChanged();
         if(_loop is not null)try{await _loop;}catch(OperationCanceledException){}catch(Exception ex){_log("Scheduler beim Beenden: "+ex.Message);}
         await _gate.WaitAsync();
         try{await _scanner.DisposeAsync();}finally{_gate.Release();}
-        _stop.Dispose();_gate.Dispose();
+        _stop.Dispose();_gate.Dispose();_wake.Dispose();
     }
 }
