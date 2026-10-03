@@ -4,10 +4,9 @@ namespace MarketWatcher;
 
 public static class AppPaths
 {
-    public static readonly string Root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MarktWaechter");
-    public static readonly string Database = Path.Combine(Root, "marktwaechter.db");
-    public static readonly string BackupDirectory = Path.Combine(Root, "Backups");
-    public static readonly string DatabaseBackup = Path.Combine(BackupDirectory, "marktwaechter-latest.db");
+    public static readonly string Root = Path.Combine(AppContext.BaseDirectory, "data");
+    public static readonly string StateFile = Path.Combine(Root, "state.json");
+    public static readonly string BackupDirectory = Path.Combine(Root, "backups");
     public static readonly string EdgeProfile = Path.Combine(Root, "EdgeProfile");
     static AppPaths() { Directory.CreateDirectory(Root); Directory.CreateDirectory(EdgeProfile); Directory.CreateDirectory(BackupDirectory); }
 }

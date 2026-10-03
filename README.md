@@ -22,9 +22,9 @@ dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=
 
 ## Datenschutz
 
-Konfiguration, Ausschlussdatenbank und Browserprofil liegen unter `%LOCALAPPDATA%\MarktWaechter`. Diese Daten können Telefonnummern, Chat-IDs, E-Mail-Adressen, Sitzungen und verschlüsselte Zugangsdaten enthalten. Sie dürfen niemals eingecheckt oder weitergegeben werden.
+Konfiguration, Suchen und Ausschlussliste liegen im lesbaren JSON-Format unter `data\state.json` direkt neben der Anwendung. Eine Sicherung liegt unter `data\backups\state-latest.json`. Das Edge-Profil befindet sich ebenfalls im `data`-Ordner. Damit kann der gesamte Programmordner gemeinsam kopiert werden; eine SQLite-Datenbank wird nicht verwendet.
 
-Die Anwendung erstellt zusätzlich eine konsistente Sicherung unter `%LOCALAPPDATA%\MarktWaechter\Backups\marktwaechter-latest.db` und stellt sie automatisch wieder her, falls die Hauptdatenbank fehlt oder beschädigt ist. Der Speicherort ist unabhängig davon, von welcher EXE oder Verknüpfung die Anwendung gestartet wird.
+Beim Start erkennt MarktWächter automatisch einen anderen Computer oder Windows-Benutzer. Suchen und Ausschlussliste bleiben erhalten. Nicht übertragbare, benutzergebunden verschlüsselte Geheimnisse werden aus Sicherheitsgründen verworfen und die Anwendung fordert zur erneuten Eingabe beziehungsweise WhatsApp-QR-Anmeldung auf.
 
 ## Rechtlicher Hinweis
 

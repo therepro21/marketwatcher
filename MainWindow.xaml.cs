@@ -14,7 +14,7 @@ public partial class MainWindow : Window
     public ObservableCollection<SearchJob> Searches { get; }=[]; public ObservableCollection<string> Logs { get; }=[];
     public MainWindow()
     {
-        InitializeComponent();DataContext=this;_repo=new Repository(AppPaths.Database);_repo.Initialize();RefreshJobs();
+        InitializeComponent();DataContext=this;_repo=new Repository(AppPaths.StateFile);_repo.Initialize();RefreshJobs();
         _watcher=new WatcherService(_repo,AddLog,RefreshJobs);AutoStartBox.IsChecked=AutoStartManager.IsEnabled();
         var iconPath=Path.Combine(AppContext.BaseDirectory,"Assets","marktwachter.ico");
         _trayIcon=new Forms.NotifyIcon{Icon=File.Exists(iconPath)?new Drawing.Icon(iconPath):Drawing.SystemIcons.Application,Text="MarktWächter läuft – Suchagent aktiv",Visible=true};
@@ -24,7 +24,18 @@ public partial class MainWindow : Window
         menu.Items.Add("Beenden",null,(_,_)=>Dispatcher.Invoke(()=>{_exitRequested=true;Close();}));
         _trayIcon.ContextMenuStrip=menu;_trayIcon.DoubleClick+=(_,_)=>Dispatcher.Invoke(RestoreFromTray);
         StateChanged+=(_,_)=>{if(WindowState==WindowState.Minimized)Hide();};
-        Loaded+=async(_,_)=>{try{await _watcher.StartAsync();AgentStatus.Text="● Agent aktiv";WindowState=WindowState.Minimized;Hide();}catch(Exception ex){AgentStatus.Text="● Browserfehler";AddLog(ex.Message);}};
+        Loaded+=async(_,_)=>
+        {
+            try
+            {
+                await _watcher.StartAsync();AgentStatus.Text="● Agent aktiv";
+                var automaticStart=Environment.GetCommandLineArgs().Any(x=>x.Equals("--autostart",StringComparison.OrdinalIgnoreCase));
+                if(_repo.RequiresReauthentication)MessageBox.Show("MarktWächter wurde unter einem anderen Windows-Benutzer oder auf einem anderen Computer gestartet. Suchen und Ausschlussliste wurden übernommen. Bitte E-Mail-/Telegram-Zugangsdaten neu eingeben und WhatsApp Web per QR-Code neu anmelden.","Neue Windows-Umgebung erkannt");
+                if(automaticStart){WindowState=WindowState.Minimized;Hide();}
+                else{Show();WindowState=WindowState.Normal;Activate();}
+            }
+            catch(Exception ex){AgentStatus.Text="● Browserfehler";AddLog(ex.Message);}
+        };
     }
     protected override async void OnClosing(CancelEventArgs e)
     {
