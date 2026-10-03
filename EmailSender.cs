@@ -20,7 +20,9 @@ public static class EmailSender
         foreach(var x in items)
         {
             var details=new[]{x.Price,x.PostalCode,x.Location,job.Platform}.Where(v=>!string.IsNullOrWhiteSpace(v)).Distinct(StringComparer.OrdinalIgnoreCase);
-            html.Append($"<p><b>{WebUtility.HtmlEncode(x.Title)}</b><br>{WebUtility.HtmlEncode(string.Join(" · ",details))}<br><a href=\"{WebUtility.HtmlEncode(x.Url)}\">Anzeige öffnen</a></p>");
+            html.Append("<div style=\"margin:0 0 18px\">");
+            if(settings.IncludeImages&&!string.IsNullOrWhiteSpace(x.ImageUrl))html.Append($"<a href=\"{WebUtility.HtmlEncode(x.Url)}\"><img src=\"{WebUtility.HtmlEncode(x.ImageUrl)}\" alt=\"\" style=\"width:120px;height:90px;object-fit:cover;border-radius:8px;float:left;margin:0 12px 8px 0\"></a>");
+            html.Append($"<b>{WebUtility.HtmlEncode(x.Title)}</b><br>{WebUtility.HtmlEncode(string.Join(" · ",details))}<br><a href=\"{WebUtility.HtmlEncode(x.Url)}\">Anzeige öffnen</a><div style=\"clear:both\"></div></div>");
         }
         using var message = new MailMessage(settings.User, settings.Recipient, $"MarktWächter: {items.Count} neue Treffer für {job.Name}", html.ToString()) { IsBodyHtml=true };
         using var smtp = new SmtpClient(settings.Host,settings.Port){EnableSsl=true,Credentials=new NetworkCredential(settings.User,SecretStore.Unprotect(settings.ProtectedPassword))};

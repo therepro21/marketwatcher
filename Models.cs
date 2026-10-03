@@ -32,6 +32,7 @@ public sealed class EmailSettings
     public string User { get; set; } = "";
     public string Recipient { get; set; } = "";
     public string ProtectedPassword { get; set; } = "";
+    public bool IncludeImages { get; set; } = true;
 }
 
 public sealed class TelegramSettings
@@ -40,6 +41,7 @@ public sealed class TelegramSettings
     public string ChatId { get; set; } = "";
     public string ProtectedBotToken { get; set; } = "";
     public List<TelegramRecipient> Recipients { get; set; } = [];
+    public bool IncludeImages { get; set; } = true;
 }
 
 public sealed class TelegramRecipient
@@ -62,6 +64,7 @@ public sealed class WhatsAppSettings
     public string Recipient2Name { get; set; } = "";
     public string Recipient2Number { get; set; } = "";
     public List<WhatsAppRecipient> Recipients { get; set; } = [];
+    public bool IncludeImages { get; set; } = true;
 }
 
 public sealed class WhatsAppRecipient

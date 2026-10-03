@@ -63,7 +63,7 @@ public sealed class BrowserScanner : IAsyncDisposable
           const location = (locationEl?.innerText || '').replace(/\s+/g,' ').trim();
           const postal = ((location || text).match(/\b(?:[1-9]\d{3}|\d{5})\b/)||[''])[0];
           const img = card.querySelector?.('img');
-          return { href:a.href, text:title, fullText:text, price, image:img?.src||'', postal, location, dataTestId:a.getAttribute('data-testid')||'' };
+          return { href:a.href, text:title, fullText:text, price, image:img?.currentSrc||img?.src||'', postal, location, dataTestId:a.getAttribute('data-testid')||'' };
         }).filter(x => x.href && x.text.length > 4)
         """);
             var pageItems=raw.Where(x => IsListingUrl(job.Platform, x.Href) && IsOrganicResult(job.Platform, x.DataTestId)).Select(x =>
@@ -95,7 +95,7 @@ public sealed class BrowserScanner : IAsyncDisposable
             {
                 try
                 {
-                    foreach (var message in NotificationText.BuildChunks(job, items, 3000))
+                    foreach (var message in NotificationText.BuildChunks(job, items, 3000,settings.IncludeImages))
                     {
                         var target = $"https://web.whatsapp.com/send?phone={recipient.Phone}";
                         await page.GotoAsync(target, new PageGotoOptions { WaitUntil=WaitUntilState.DOMContentLoaded, Timeout=45000 });
