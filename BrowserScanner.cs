@@ -1,6 +1,7 @@
 using Microsoft.Playwright;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -20,7 +21,7 @@ public sealed class BrowserScanner : IAsyncDisposable
         Directory.CreateDirectory(AppPaths.EdgeProfile);
         var portFile=Path.Combine(AppPaths.EdgeProfile,"DevToolsActivePort");
         try{File.Delete(portFile);}catch(IOException){}
-        var start=new ProcessStartInfo(edge){UseShellExecute=false,CreateNoWindow=true};
+        var start=new ProcessStartInfo(edge){UseShellExecute=false,CreateNoWindow=true,WindowStyle=ProcessWindowStyle.Hidden};
         start.ArgumentList.Add($"--user-data-dir={Path.GetFullPath(AppPaths.EdgeProfile)}");
         start.ArgumentList.Add("--remote-debugging-port=0");
         start.ArgumentList.Add("--remote-debugging-address=127.0.0.1");
@@ -28,6 +29,7 @@ public sealed class BrowserScanner : IAsyncDisposable
         start.ArgumentList.Add("--window-size=1440,1000");
         start.ArgumentList.Add("--new-window");start.ArgumentList.Add("about:blank");
         _edgeProcess=Process.Start(start)??throw new InvalidOperationException("Microsoft Edge konnte nicht gestartet werden.");
+        await HideEdgeWindowAsync(_edgeProcess);
         for(var attempt=0;attempt<150&&!File.Exists(portFile);attempt++)await Task.Delay(100);
         if(!File.Exists(portFile)){await StopOwnedEdgeAsync();throw new InvalidOperationException("Edge hat seine lokale Steuerung nicht bereitgestellt.");}
         var port=(await File.ReadAllLinesAsync(portFile)).FirstOrDefault()?.Trim();
@@ -35,6 +37,7 @@ public sealed class BrowserScanner : IAsyncDisposable
         _playwright = await Playwright.CreateAsync();
         _browser=await _playwright.Chromium.ConnectOverCDPAsync($"http://127.0.0.1:{port}");
         _context=_browser.Contexts.FirstOrDefault()??throw new InvalidOperationException("Edge-Browserkontext wurde nicht gefunden.");
+        await HideEdgeWindowAsync(_edgeProcess);
     }
 
     public async Task<List<Listing>> ScanAsync(SearchJob job)
@@ -183,6 +186,22 @@ public sealed class BrowserScanner : IAsyncDisposable
         catch{try{if(!process.HasExited)process.Kill();}catch{}}
         finally{process.Dispose();}
     }
+    private static async Task HideEdgeWindowAsync(Process process)
+    {
+        // Edge creates its native window asynchronously. Re-hide it briefly so
+        // neither a window nor a taskbar button flashes during background runs.
+        for(var attempt=0;attempt<20;attempt++)
+        {
+            try
+            {
+                process.Refresh();var handle=process.MainWindowHandle;
+                if(handle!=IntPtr.Zero)ShowWindowAsync(handle,0); // SW_HIDE
+            }
+            catch{}
+            await Task.Delay(50);
+        }
+    }
+    [DllImport("user32.dll")]private static extern bool ShowWindowAsync(IntPtr hWnd,int nCmdShow);
     private static async Task<string?> DetectInterventionAsync(IPage page,string title,string body)
     {
         var text=(title+"\n"+body).ToLowerInvariant();
