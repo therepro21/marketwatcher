@@ -1,4 +1,4 @@
-<Window x:Class="MarketWatcher.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="MarketWatcher" Icon="Assets/marketwatcher.ico" Height="750" Width="1160" MinHeight="620" MinWidth="950" WindowStartupLocation="CenterScreen" Background="#0B1020">
+<Window x:Class="MarketWatcher.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="MarketWatcher" Height="750" Width="1160" MinHeight="620" MinWidth="950" WindowStartupLocation="CenterScreen" Background="#0B1020">
  <Window.Resources>
   <SolidColorBrush x:Key="Card" Color="#141B2D"/><SolidColorBrush x:Key="Muted" Color="#93A4BF"/>
   <Style TargetType="TextBlock"><Setter Property="Foreground" Value="#EAF0FF"/></Style>
