@@ -17,6 +17,13 @@ public sealed class Repository(string stateFile)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(stateFile)!);Directory.CreateDirectory(AppPaths.BackupDirectory);
             _state=LoadState();
+            foreach(var job in _state.Jobs.Where(x=>x.LastNewResultUtc is null))
+            {
+                var seen=_state.SeenItems.Where(x=>x.JobId==job.Id).ToList();
+                var notified=seen.Select(x=>ParseUtc(x.NotifiedUtc)).Where(x=>x.HasValue).Select(x=>x!.Value).ToList();
+                var firstSeen=seen.Select(x=>ParseUtc(x.FirstSeenUtc)).Where(x=>x.HasValue).Select(x=>x!.Value).ToList();
+                job.LastNewResultUtc=notified.Count>0?notified.Max():firstSeen.Count>0?firstSeen.Max():job.LastRunUtc??DateTime.UtcNow;
+            }
             if(string.IsNullOrWhiteSpace(_state.EnvironmentId))_state.EnvironmentId=EnvironmentId;
             else if(!string.Equals(_state.EnvironmentId,EnvironmentId,StringComparison.Ordinal))
             {
@@ -32,6 +39,7 @@ public sealed class Repository(string stateFile)
             try{if(File.Exists(candidate))return JsonSerializer.Deserialize<PortableState>(File.ReadAllText(candidate),_json)??new();}catch{}
         return new();
     }
+    private static DateTime? ParseUtc(string? value)=>DateTime.TryParse(value,System.Globalization.CultureInfo.InvariantCulture,System.Globalization.DateTimeStyles.RoundtripKind,out var parsed)?parsed.ToUniversalTime():null;
     public List<SearchJob> GetJobs(){lock(_sync)return _state.Jobs.OrderByDescending(x=>x.Id).Select(Clone).ToList();}
     public SearchJob? GetJob(long id)=>GetJobs().FirstOrDefault(x=>x.Id==id);
     public long AddJob(SearchJob job){lock(_sync){job.Id=_state.NextJobId++;_state.Jobs.Add(Clone(job));SaveLocked();return job.Id;}}
