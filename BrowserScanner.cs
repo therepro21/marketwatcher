@@ -25,12 +25,11 @@ public sealed class BrowserScanner : IAsyncDisposable
         start.ArgumentList.Add($"--user-data-dir={Path.GetFullPath(AppPaths.EdgeProfile)}");
         start.ArgumentList.Add("--remote-debugging-port=0");
         start.ArgumentList.Add("--remote-debugging-address=127.0.0.1");
+        start.ArgumentList.Add("--headless=new");
         start.ArgumentList.Add("--disable-features=WakeLock,MediaSessionService");
         start.ArgumentList.Add("--autoplay-policy=user-gesture-required");
         start.ArgumentList.Add("--mute-audio");
-        start.ArgumentList.Add("--window-position=-32000,-32000");
-        start.ArgumentList.Add("--window-size=1440,1000");
-        start.ArgumentList.Add("--new-window");start.ArgumentList.Add("about:blank");
+        start.ArgumentList.Add("--window-size=1440,1000");start.ArgumentList.Add("about:blank");
         _edgeProcess=Process.Start(start)??throw new InvalidOperationException("Microsoft Edge konnte nicht gestartet werden.");
         await HideEdgeWindowAsync(_edgeProcess);
         for(var attempt=0;attempt<150&&!File.Exists(portFile);attempt++)await Task.Delay(100);
