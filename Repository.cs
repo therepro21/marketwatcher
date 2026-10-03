@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using System.Globalization;
+using System.IO;
 using System.Text.Json;
 
 namespace MarketWatcher;
@@ -8,6 +9,17 @@ public sealed class Repository(string database)
 {
     private string Cs => $"Data Source={database}";
     public void Initialize()
+    {
+        if(!File.Exists(database)&&File.Exists(AppPaths.DatabaseBackup))File.Copy(AppPaths.DatabaseBackup,database,true);
+        try{InitializeDatabase();}
+        catch(SqliteException)when(File.Exists(AppPaths.DatabaseBackup))
+        {
+            if(File.Exists(database))File.Move(database,database+".corrupt-"+DateTime.Now.ToString("yyyyMMdd-HHmmss"),true);
+            File.Copy(AppPaths.DatabaseBackup,database,true);InitializeDatabase();
+        }
+        BackupNow();
+    }
+    private void InitializeDatabase()
     {
         using var db = new SqliteConnection(Cs); db.Open();
         using var cmd = db.CreateCommand(); cmd.CommandText = """
@@ -32,7 +44,7 @@ public sealed class Repository(string database)
         return list;
     }
     public SearchJob? GetJob(long id) => GetJobs().FirstOrDefault(x => x.Id == id);
-    public long AddJob(SearchJob j) { using var db=new SqliteConnection(Cs); db.Open(); using var c=db.CreateCommand(); c.CommandText="INSERT INTO jobs(name,url,platform,interval_seconds,enabled,status,match_mode,send_to_first,send_to_second,recipient_ids,telegram_recipient_ids) VALUES($n,$u,$p,$i,1,$s,$m,$f,$q,$r,$t); SELECT last_insert_rowid();"; c.Parameters.AddWithValue("$n",j.Name);c.Parameters.AddWithValue("$u",j.Url);c.Parameters.AddWithValue("$p",j.Platform);c.Parameters.AddWithValue("$i",j.IntervalSeconds);c.Parameters.AddWithValue("$s",j.Status);c.Parameters.AddWithValue("$m",j.MatchMode);c.Parameters.AddWithValue("$f",j.SendToFirst?1:0);c.Parameters.AddWithValue("$q",j.SendToSecond?1:0);c.Parameters.AddWithValue("$r",j.RecipientIds);c.Parameters.AddWithValue("$t",j.TelegramRecipientIds);return (long)c.ExecuteScalar()!; }
+    public long AddJob(SearchJob j) { long id;using(var db=new SqliteConnection(Cs)){db.Open();using var c=db.CreateCommand();c.CommandText="INSERT INTO jobs(name,url,platform,interval_seconds,enabled,status,match_mode,send_to_first,send_to_second,recipient_ids,telegram_recipient_ids) VALUES($n,$u,$p,$i,1,$s,$m,$f,$q,$r,$t); SELECT last_insert_rowid();";c.Parameters.AddWithValue("$n",j.Name);c.Parameters.AddWithValue("$u",j.Url);c.Parameters.AddWithValue("$p",j.Platform);c.Parameters.AddWithValue("$i",j.IntervalSeconds);c.Parameters.AddWithValue("$s",j.Status);c.Parameters.AddWithValue("$m",j.MatchMode);c.Parameters.AddWithValue("$f",j.SendToFirst?1:0);c.Parameters.AddWithValue("$q",j.SendToSecond?1:0);c.Parameters.AddWithValue("$r",j.RecipientIds);c.Parameters.AddWithValue("$t",j.TelegramRecipientIds);id=(long)c.ExecuteScalar()!;}BackupNow();return id; }
     public void SetEnabled(long id,bool enabled)=>Exec("UPDATE jobs SET enabled=$v WHERE id=$id",("$v",enabled?1:0),("$id",id));
     public void UpdateSchedule(long id,int intervalSeconds,bool enabled)=>Exec("UPDATE jobs SET interval_seconds=$i,enabled=$e WHERE id=$id",("$i",intervalSeconds),("$e",enabled?1:0),("$id",id));
     public void UpdateMatchMode(long id,string mode)=>Exec("UPDATE jobs SET match_mode=$m WHERE id=$id",("$m",mode),("$id",id));
@@ -62,5 +74,11 @@ public sealed class Repository(string database)
     }
     public void SaveWhatsApp(WhatsAppSettings s)=>Exec("INSERT INTO settings(key,value) VALUES('whatsapp',$v) ON CONFLICT(key) DO UPDATE SET value=$v",("$v",JsonSerializer.Serialize(s)));
     private string? Scalar(string sql){using var db=new SqliteConnection(Cs);db.Open();using var c=db.CreateCommand();c.CommandText=sql;return c.ExecuteScalar() as string;}
-    private void Exec(string sql,params (string,object)[] args){using var db=new SqliteConnection(Cs);db.Open();using var c=db.CreateCommand();c.CommandText=sql;foreach(var a in args)c.Parameters.AddWithValue(a.Item1,a.Item2);c.ExecuteNonQuery();}
+    public void BackupNow()
+    {
+        Directory.CreateDirectory(AppPaths.BackupDirectory);var temporary=AppPaths.DatabaseBackup+".tmp";if(File.Exists(temporary))File.Delete(temporary);
+        using(var source=new SqliteConnection(Cs)){source.Open();using var destination=new SqliteConnection($"Data Source={temporary}");destination.Open();source.BackupDatabase(destination);}
+        File.Move(temporary,AppPaths.DatabaseBackup,true);
+    }
+    private void Exec(string sql,params (string,object)[] args){using(var db=new SqliteConnection(Cs)){db.Open();using var c=db.CreateCommand();c.CommandText=sql;foreach(var a in args)c.Parameters.AddWithValue(a.Item1,a.Item2);c.ExecuteNonQuery();}BackupNow();}
 }

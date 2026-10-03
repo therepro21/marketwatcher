@@ -24,6 +24,8 @@ dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=
 
 Konfiguration, Ausschlussdatenbank und Browserprofil liegen unter `%LOCALAPPDATA%\MarktWaechter`. Diese Daten können Telefonnummern, Chat-IDs, E-Mail-Adressen, Sitzungen und verschlüsselte Zugangsdaten enthalten. Sie dürfen niemals eingecheckt oder weitergegeben werden.
 
+Die Anwendung erstellt zusätzlich eine konsistente Sicherung unter `%LOCALAPPDATA%\MarktWaechter\Backups\marktwaechter-latest.db` und stellt sie automatisch wieder her, falls die Hauptdatenbank fehlt oder beschädigt ist. Der Speicherort ist unabhängig davon, von welcher EXE oder Verknüpfung die Anwendung gestartet wird.
+
 ## Rechtlicher Hinweis
 
 Dies ist ein inoffizielles, nicht kommerzielles Privatprojekt. Es besteht keine Verbindung zu Willhaben, Kleinanzeigen, Vinted, eBay, WhatsApp, Telegram, Microsoft oder Google. Produkt- und Markennamen gehören ihren jeweiligen Inhabern.
