@@ -15,7 +15,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();DataContext=this;_repo=new Repository(AppPaths.StateFile);_repo.Initialize();RefreshJobs();
-        _watcher=new WatcherService(_repo,AddLog,RefreshJobs);AutoStartBox.IsChecked=AutoStartManager.IsEnabled();
+        _watcher=new WatcherService(_repo,AddLog,RefreshJobs);_watcher.ManualInterventionRequired+=ShowBrowserWarning;AutoStartBox.IsChecked=AutoStartManager.IsEnabled();
         var iconPath=Path.Combine(AppContext.BaseDirectory,"Assets","marketwatcher.ico");
         _trayIcon=new Forms.NotifyIcon{Icon=File.Exists(iconPath)?new Drawing.Icon(iconPath):Drawing.SystemIcons.Application,Text="MarketWatcher läuft – Suchagent aktiv",Visible=true};
         var menu=new Forms.ContextMenuStrip();
@@ -80,6 +80,11 @@ public partial class MainWindow : Window
         catch(Exception ex){MessageBox.Show("Autostart konnte nicht geändert werden: "+ex.Message);AutoStartBox.IsChecked=AutoStartManager.IsEnabled();}
     }
     private async void OpenProfile_Click(object sender,RoutedEventArgs e){try{await _watcher.OpenProfileAsync();}catch(Exception ex){MessageBox.Show(ex.Message);}}
+    private void ShowBrowserWarning(BrowserChallengeException challenge)=>Dispatcher.BeginInvoke(() =>
+    {
+        RestoreFromTray();AgentStatus.Text="● Eingabe erforderlich";AgentStatus.Foreground=new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255,95,95));
+        new BrowserWarningWindow(challenge.SearchName,challenge.Message,challenge.Url,async url=>await _watcher.OpenProfileAsync(url)){Owner=this}.ShowDialog();
+    });
     private void PlatformLink_Click(object sender,System.Windows.Navigation.RequestNavigateEventArgs e){Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri){UseShellExecute=true});e.Handled=true;}
     private void AddLog(string text)=>Dispatcher.Invoke(()=>{Logs.Insert(0,$"{DateTime.Now:HH:mm:ss}  {text}");while(Logs.Count>200)Logs.RemoveAt(Logs.Count-1);});
     private void RefreshJobs()=>Dispatcher.Invoke(()=>{Searches.Clear();foreach(var x in _repo.GetJobs())Searches.Add(x);});

@@ -2,6 +2,7 @@ namespace MarketWatcher;
 
 public sealed class WatcherService : IAsyncDisposable
 {
+    public event Action<BrowserChallengeException>? ManualInterventionRequired;
     private readonly Repository _repo; private readonly Action<string> _log; private readonly Action _refresh;
     private readonly BrowserScanner _scanner = new(); private readonly CancellationTokenSource _stop = new();
     private readonly SemaphoreSlim _gate = new(1,1); private Task? _loop;
@@ -42,7 +43,7 @@ public sealed class WatcherService : IAsyncDisposable
                 _log($"{job.Name}: {fresh.Count} neue Treffer."+(errors.Count==0?"":$" Fehler: {string.Join(" | ",errors)}"));
             }
         }
-        catch(BrowserChallengeException ex){_repo.UpdateRun(id,true,"Pausiert: Browser-Prüfung");_repo.SetEnabled(id,false);_log(ex.Message);}
+        catch(BrowserChallengeException ex){_repo.UpdateRun(id,true,"Pausiert: Eingabe erforderlich");_repo.SetEnabled(id,false);_log(ex.Message);ManualInterventionRequired?.Invoke(ex);}
         catch(Exception ex){_repo.UpdateRun(id,_repo.GetJob(id)?.Initialized??false,"Fehler: "+ex.Message);_log("Fehler: "+ex.Message);}
         finally
         {
@@ -65,14 +66,17 @@ public sealed class WatcherService : IAsyncDisposable
         catch(Exception ex){_repo.SetEnabled(id,false);_log("Fortsetzen fehlgeschlagen: "+ex.Message);}
         finally{try{await _scanner.CloseAsync();}catch{} _gate.Release();_refresh();}
     }
-    public async Task OpenProfileAsync()
+    public async Task OpenProfileAsync(string? url=null)
     {
         await _gate.WaitAsync();
         try
         {
             await _scanner.CloseAsync();
             var edge=BrowserFinder.FindEdge()??throw new InvalidOperationException("Microsoft Edge wurde nicht gefunden.");
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(edge,$"--user-data-dir=\"{AppPaths.EdgeProfile}\""){UseShellExecute=true});
+            var start=new System.Diagnostics.ProcessStartInfo(edge){UseShellExecute=true};
+            start.ArgumentList.Add($"--user-data-dir={System.IO.Path.GetFullPath(AppPaths.EdgeProfile)}");start.ArgumentList.Add("--new-window");
+            if(!string.IsNullOrWhiteSpace(url))start.ArgumentList.Add(url);
+            System.Diagnostics.Process.Start(start);
             _log("Edge-Profil geöffnet. Nach Anmeldung/Prüfung Edge schließen und die Suche wieder aktivieren.");
         }
         finally

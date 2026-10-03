@@ -1,4 +1,6 @@
 using Microsoft.Playwright;
+using System.Diagnostics;
+using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -7,17 +9,32 @@ namespace MarketWatcher;
 public sealed class BrowserScanner : IAsyncDisposable
 {
     private IPlaywright? _playwright;
+    private IBrowser? _browser;
     private IBrowserContext? _context;
+    private Process? _edgeProcess;
 
     public async Task StartAsync(bool headless = true)
     {
         if (_context is not null) return;
         var edge = BrowserFinder.FindEdge() ?? throw new InvalidOperationException("Microsoft Edge wurde nicht gefunden.");
+        Directory.CreateDirectory(AppPaths.EdgeProfile);
+        var portFile=Path.Combine(AppPaths.EdgeProfile,"DevToolsActivePort");
+        try{File.Delete(portFile);}catch(IOException){}
+        var start=new ProcessStartInfo(edge){UseShellExecute=false,CreateNoWindow=true};
+        start.ArgumentList.Add($"--user-data-dir={Path.GetFullPath(AppPaths.EdgeProfile)}");
+        start.ArgumentList.Add("--remote-debugging-port=0");
+        start.ArgumentList.Add("--remote-debugging-address=127.0.0.1");
+        start.ArgumentList.Add("--window-position=-32000,-32000");
+        start.ArgumentList.Add("--window-size=1440,1000");
+        start.ArgumentList.Add("--new-window");start.ArgumentList.Add("about:blank");
+        _edgeProcess=Process.Start(start)??throw new InvalidOperationException("Microsoft Edge konnte nicht gestartet werden.");
+        for(var attempt=0;attempt<150&&!File.Exists(portFile);attempt++)await Task.Delay(100);
+        if(!File.Exists(portFile)){await StopOwnedEdgeAsync();throw new InvalidOperationException("Edge hat seine lokale Steuerung nicht bereitgestellt.");}
+        var port=(await File.ReadAllLinesAsync(portFile)).FirstOrDefault()?.Trim();
+        if(string.IsNullOrWhiteSpace(port)){await StopOwnedEdgeAsync();throw new InvalidOperationException("Edge-Steuerport konnte nicht gelesen werden.");}
         _playwright = await Playwright.CreateAsync();
-        _context = await _playwright.Chromium.LaunchPersistentContextAsync(AppPaths.EdgeProfile, new BrowserTypeLaunchPersistentContextOptions
-        {
-            ExecutablePath = edge, Headless = headless, Locale = "de-DE", ViewportSize = new() { Width = 1440, Height = 1000 }
-        });
+        _browser=await _playwright.Chromium.ConnectOverCDPAsync($"http://127.0.0.1:{port}");
+        _context=_browser.Contexts.FirstOrDefault()??throw new InvalidOperationException("Edge-Browserkontext wurde nicht gefunden.");
     }
 
     public async Task<List<Listing>> ScanAsync(SearchJob job)
@@ -35,8 +52,8 @@ public sealed class BrowserScanner : IAsyncDisposable
             await page.WaitForTimeoutAsync(1800);
             var title = await page.TitleAsync();
             var body = (await page.Locator("body").InnerTextAsync(new LocatorInnerTextOptions { Timeout = 10000 })).ToLowerInvariant();
-            if (title.Contains("just a moment", StringComparison.OrdinalIgnoreCase) || (job.Platform!="Quoka"&&(body.Contains("captcha") || body.Contains("verify you are human") || body.Contains("sicherheitsüberprüfung"))))
-                throw new BrowserChallengeException("Browser-Prüfung erkannt – Edge-Profil manuell öffnen und bestätigen.");
+            if (IsManualInterventionRequired(title,body)||await HasVisibleConsentAsync(page))
+                throw new BrowserChallengeException(job.Name,targetUrl,"CAPTCHA, Cloudflare- oder Cookie-Prüfung erkannt.");
 
             // Willhaben adds more organic cards while the page is scrolled. Read
             // only after the document height has remained unchanged repeatedly.
@@ -103,7 +120,7 @@ public sealed class BrowserScanner : IAsyncDisposable
                         await page.GotoAsync(target, new PageGotoOptions { WaitUntil=WaitUntilState.DOMContentLoaded, Timeout=45000 });
                         var composer = page.Locator("footer [contenteditable='true']").Last;
                         try { await composer.WaitForAsync(new LocatorWaitForOptions { State=WaitForSelectorState.Visible, Timeout=30000 }); }
-                        catch { throw new BrowserChallengeException("WhatsApp Web ist nicht angemeldet. Edge-Profil öffnen, QR-Code scannen und danach erneut testen."); }
+                        catch { throw new BrowserChallengeException("WhatsApp Web","https://web.whatsapp.com","WhatsApp Web ist nicht angemeldet oder benötigt eine Bestätigung."); }
                         var verificationText=VerificationText(message);
                         var before=CountOccurrences(Normalize(await page.Locator("body").InnerTextAsync()),verificationText);
                         await composer.FillAsync(message);
@@ -153,8 +170,30 @@ public sealed class BrowserScanner : IAsyncDisposable
     }
     public async Task CloseAsync()
     {
-        if (_context is not null) { await _context.CloseAsync(); _context = null; }
+        if(_browser is not null){try{await _browser.CloseAsync();}catch{} _browser=null;}
+        _context=null;
         _playwright?.Dispose(); _playwright = null;
+        await StopOwnedEdgeAsync();
+    }
+    private async Task StopOwnedEdgeAsync()
+    {
+        var process=_edgeProcess;_edgeProcess=null;if(process is null)return;
+        try{if(!process.HasExited){process.Kill(true);await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));}}
+        catch{try{if(!process.HasExited)process.Kill();}catch{}}
+        finally{process.Dispose();}
+    }
+    private static bool IsManualInterventionRequired(string title,string body)
+    {
+        var text=(title+"\n"+body).ToLowerInvariant();
+        return text.Contains("just a moment")||text.Contains("nur einen moment")||text.Contains("verify you are human")||
+               text.Contains("bestätigen sie, dass sie ein mensch")||text.Contains("sicherheitsüberprüfung")||
+               text.Contains("security verification")||text.Contains("captcha")||text.Contains("cf-chl-")||text.Contains("challenge-platform");
+    }
+    private static async Task<bool> HasVisibleConsentAsync(IPage page)
+    {
+        var selectors=new[]{"#onetrust-banner-sdk","[role=dialog] button:has-text('Cookies akzeptieren')","[role=dialog] button:has-text('Alle akzeptieren')","[role=dialog] button:has-text('Accept cookies')","[role=dialog] button:has-text('Accept all')"};
+        foreach(var selector in selectors)try{if(await page.Locator(selector).First.IsVisibleAsync())return true;}catch{}
+        return false;
     }
     private static bool IsListingUrl(string platform,string url) => platform switch
     {
@@ -197,4 +236,8 @@ public sealed class BrowserScanner : IAsyncDisposable
     private sealed class RawLink { public string Href { get; set; }=""; public string Text { get; set; }=""; public string FullText { get; set; }=""; public string Price { get; set; }=""; public string Image { get; set; }=""; public string Postal { get; set; }=""; public string Location { get; set; }=""; public string DataTestId { get; set; }=""; public string ExternalId { get; set; }=""; }
 }
 
-public sealed class BrowserChallengeException(string message) : Exception(message);
+public sealed class BrowserChallengeException(string searchName,string url,string message) : Exception(message)
+{
+    public string SearchName { get; }=searchName;
+    public string Url { get; }=url;
+}

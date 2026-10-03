@@ -17,4 +17,5 @@ appsettings.local.json
 secrets.json
 EdgeProfile/
 publish/
+publish-check/
 TestResults/
