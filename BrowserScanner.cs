@@ -67,6 +67,7 @@ public sealed class BrowserScanner : IAsyncDisposable
         {
             var targetUrl=SetQueryParameter(baseUrl,pageKey,pageNumber.ToString());
             await page.GotoAsync(targetUrl, new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 45000 });
+            await HideEdgeWindowAsync(_edgeProcess!);
             await page.WaitForTimeoutAsync(1800);
             var title = await page.TitleAsync();
             var body = (await page.Locator("body").InnerTextAsync(new LocatorInnerTextOptions { Timeout = 10000 })).ToLowerInvariant();
@@ -204,19 +205,44 @@ public sealed class BrowserScanner : IAsyncDisposable
     }
     private static async Task HideEdgeWindowAsync(Process process)
     {
-        // Edge creates its native window asynchronously. Re-hide it briefly so
-        // neither a window nor a taskbar button flashes during background runs.
+        // Edge may create its taskbar window in a child process. Hide every
+        // window belonging to the exact tree started by MarketWatcher.
         for(var attempt=0;attempt<20;attempt++)
         {
             try
             {
-                process.Refresh();var handle=process.MainWindowHandle;
-                if(handle!=IntPtr.Zero)ShowWindowAsync(handle,0); // SW_HIDE
+                var owned=GetProcessTree(process.Id);
+                EnumWindows((handle,_)=>{GetWindowThreadProcessId(handle,out var pid);if(owned.Contains((int)pid))ShowWindowAsync(handle,0);return true;},IntPtr.Zero);
             }
             catch{}
             await Task.Delay(50);
         }
     }
+    private static HashSet<int> GetProcessTree(int rootPid)
+    {
+        var result=new HashSet<int>{rootPid};var entries=new List<(int Pid,int Parent)>();
+        var snapshot=CreateToolhelp32Snapshot(2,0);if(snapshot==new IntPtr(-1))return result;
+        try
+        {
+            var entry=new ProcessEntry32{Size=(uint)Marshal.SizeOf<ProcessEntry32>()};
+            if(Process32First(snapshot,ref entry))do{entries.Add(((int)entry.ProcessId,(int)entry.ParentProcessId));entry.Size=(uint)Marshal.SizeOf<ProcessEntry32>();}while(Process32Next(snapshot,ref entry));
+        }
+        finally{CloseHandle(snapshot);}
+        var changed=true;while(changed){changed=false;foreach(var item in entries)if(result.Contains(item.Parent)&&result.Add(item.Pid))changed=true;}
+        return result;
+    }
+    private delegate bool EnumWindowsCallback(IntPtr handle,IntPtr parameter);
+    [StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)]private struct ProcessEntry32
+    {
+        public uint Size,Usage,ProcessId;public IntPtr DefaultHeapId;public uint ModuleId,Threads,ParentProcessId;public int Priority;public uint Flags;
+        [MarshalAs(UnmanagedType.ByValTStr,SizeConst=260)]public string ExeFile;
+    }
+    [DllImport("kernel32.dll",SetLastError=true)]private static extern IntPtr CreateToolhelp32Snapshot(uint flags,uint processId);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode)]private static extern bool Process32First(IntPtr snapshot,ref ProcessEntry32 entry);
+    [DllImport("kernel32.dll",CharSet=CharSet.Unicode)]private static extern bool Process32Next(IntPtr snapshot,ref ProcessEntry32 entry);
+    [DllImport("kernel32.dll")]private static extern bool CloseHandle(IntPtr handle);
+    [DllImport("user32.dll")]private static extern bool EnumWindows(EnumWindowsCallback callback,IntPtr parameter);
+    [DllImport("user32.dll")]private static extern uint GetWindowThreadProcessId(IntPtr handle,out uint processId);
     [DllImport("user32.dll")]private static extern bool ShowWindowAsync(IntPtr hWnd,int nCmdShow);
     public static void CleanDisposableCaches()
     {
