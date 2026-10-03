@@ -83,8 +83,8 @@ public partial class MainWindow : Window
     private void ShowBrowserWarning(BrowserChallengeException challenge)=>Dispatcher.BeginInvoke(() =>
     {
         RestoreFromTray();AgentStatus.Text="● Eingabe erforderlich";AgentStatus.Foreground=new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255,95,95));
-        if(_browserWarning is null){_browserWarning=new BrowserWarningWindow(challenge.SearchName,challenge.Message,challenge.Url,async url=>await _watcher.OpenProfileAsync(url));_browserWarning.Closed+=(_,_)=>_browserWarning=null;_browserWarning.Show();}
-        else _browserWarning.UpdateChallenge(challenge.SearchName,challenge.Message,challenge.Url);
+        if(_browserWarning is null){_browserWarning=new BrowserWarningWindow(challenge.Platform,challenge.SearchName,challenge.Message,challenge.Url,async url=>await _watcher.OpenProfileAsync(url));_browserWarning.Closed+=(_,_)=>_browserWarning=null;_browserWarning.Show();}
+        else _browserWarning.UpdateChallenge(challenge.Platform,challenge.SearchName,challenge.Message,challenge.Url);
         _browserWarning.Activate();
     });
     private void PlatformLink_Click(object sender,System.Windows.Navigation.RequestNavigateEventArgs e){Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri){UseShellExecute=true});e.Handled=true;}

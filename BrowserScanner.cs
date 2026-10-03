@@ -53,7 +53,7 @@ public sealed class BrowserScanner : IAsyncDisposable
             var title = await page.TitleAsync();
             var body = (await page.Locator("body").InnerTextAsync(new LocatorInnerTextOptions { Timeout = 10000 })).ToLowerInvariant();
             if (IsManualInterventionRequired(title,body)||await HasVisibleChallengeAsync(page)||await HasVisibleConsentAsync(page))
-                throw new BrowserChallengeException(job.Name,targetUrl,"CAPTCHA, Cloudflare- oder Cookie-Prüfung erkannt.");
+                throw new BrowserChallengeException(job.Platform,job.Name,targetUrl,"CAPTCHA, Cloudflare- oder Cookie-Prüfung erkannt.");
 
             // Willhaben adds more organic cards while the page is scrolled. Read
             // only after the document height has remained unchanged repeatedly.
@@ -120,7 +120,7 @@ public sealed class BrowserScanner : IAsyncDisposable
                         await page.GotoAsync(target, new PageGotoOptions { WaitUntil=WaitUntilState.DOMContentLoaded, Timeout=45000 });
                         var composer = page.Locator("footer [contenteditable='true']").Last;
                         try { await composer.WaitForAsync(new LocatorWaitForOptions { State=WaitForSelectorState.Visible, Timeout=30000 }); }
-                        catch { throw new BrowserChallengeException("WhatsApp Web","https://web.whatsapp.com","WhatsApp Web ist nicht angemeldet oder benötigt eine Bestätigung."); }
+                        catch { throw new BrowserChallengeException("WhatsApp Web","Nachrichtenversand / Anmeldung","https://web.whatsapp.com","WhatsApp Web ist nicht angemeldet oder benötigt eine Bestätigung."); }
                         var verificationText=VerificationText(message);
                         var before=CountOccurrences(Normalize(await page.Locator("body").InnerTextAsync()),verificationText);
                         await composer.FillAsync(message);
@@ -242,8 +242,9 @@ public sealed class BrowserScanner : IAsyncDisposable
     private sealed class RawLink { public string Href { get; set; }=""; public string Text { get; set; }=""; public string FullText { get; set; }=""; public string Price { get; set; }=""; public string Image { get; set; }=""; public string Postal { get; set; }=""; public string Location { get; set; }=""; public string DataTestId { get; set; }=""; public string ExternalId { get; set; }=""; }
 }
 
-public sealed class BrowserChallengeException(string searchName,string url,string message) : Exception(message)
+public sealed class BrowserChallengeException(string platform,string searchName,string url,string message) : Exception(message)
 {
+    public string Platform { get; }=platform;
     public string SearchName { get; }=searchName;
     public string Url { get; }=url;
 }
