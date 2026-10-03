@@ -18,4 +18,6 @@ secrets.json
 EdgeProfile/
 publish/
 publish-check/
+publish-small/
+publish-fd/
 TestResults/
