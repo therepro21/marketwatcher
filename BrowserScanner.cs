@@ -1,0 +1,191 @@
+using Microsoft.Playwright;
+using System.Security.Cryptography;
+using System.Text;
+
+namespace MarketWatcher;
+
+public sealed class BrowserScanner : IAsyncDisposable
+{
+    private IPlaywright? _playwright;
+    private IBrowserContext? _context;
+
+    public async Task StartAsync(bool headless = true)
+    {
+        if (_context is not null) return;
+        var edge = BrowserFinder.FindEdge() ?? throw new InvalidOperationException("Microsoft Edge wurde nicht gefunden.");
+        _playwright = await Playwright.CreateAsync();
+        _context = await _playwright.Chromium.LaunchPersistentContextAsync(AppPaths.EdgeProfile, new BrowserTypeLaunchPersistentContextOptions
+        {
+            ExecutablePath = edge, Headless = headless, Locale = "de-DE", ViewportSize = new() { Width = 1440, Height = 1000 }
+        });
+    }
+
+    public async Task<List<Listing>> ScanAsync(SearchJob job)
+    {
+        await StartAsync();
+        var page = _context!.Pages.FirstOrDefault() ?? await _context.NewPageAsync();
+        var collected=new Dictionary<string,Listing>(StringComparer.OrdinalIgnoreCase);
+        var maxPages=job.Platform=="willhaben"?10:1;
+        var baseUrl=job.Platform=="willhaben"?SetQueryParameter(job.Url,"rows","90"):job.Url;
+        for(var pageNumber=1;pageNumber<=maxPages;pageNumber++)
+        {
+            var targetUrl=pageNumber==1?SetQueryParameter(baseUrl,"page","1"):SetQueryParameter(baseUrl,"page",pageNumber.ToString());
+            await page.GotoAsync(targetUrl, new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 45000 });
+            await page.WaitForTimeoutAsync(1800);
+            var title = await page.TitleAsync();
+            var body = (await page.Locator("body").InnerTextAsync(new LocatorInnerTextOptions { Timeout = 10000 })).ToLowerInvariant();
+            if (title.Contains("just a moment", StringComparison.OrdinalIgnoreCase) || body.Contains("captcha") || body.Contains("verify you are human") || body.Contains("sicherheitsüberprüfung"))
+                throw new BrowserChallengeException("Browser-Prüfung erkannt – Edge-Profil manuell öffnen und bestätigen.");
+
+            // Willhaben adds more organic cards while the page is scrolled. Read
+            // only after the document height has remained unchanged repeatedly.
+            if(job.Platform=="willhaben")
+            {
+                var stable=0;var previousHeight=0d;
+                for(var scroll=0;scroll<30&&stable<3;scroll++)
+                {
+                    var height=await page.EvaluateAsync<double>("document.documentElement.scrollHeight");
+                    await page.EvaluateAsync("window.scrollTo(0, document.documentElement.scrollHeight)");
+                    await page.WaitForTimeoutAsync(450);
+                    var nextHeight=await page.EvaluateAsync<double>("document.documentElement.scrollHeight");
+                    stable=nextHeight<=Math.Max(height,previousHeight)?stable+1:0;previousHeight=nextHeight;
+                }
+            }
+
+            var raw = await page.Locator("a[href]").EvaluateAllAsync<RawLink[]>("""
+        els => els.map(a => {
+          const card = a.closest('article, li, [data-testid*=item], [class*=item], [class*=ad]') || a;
+          const text = (card.innerText || a.innerText || '').replace(/\s+/g,' ').trim();
+          const titleEl = card.querySelector?.('h2,h3,[data-testid*=title],[class*=title]');
+          const title = (titleEl?.innerText || a.innerText || text).replace(/\s+/g,' ').trim();
+          const price = (text.match(/(?:€|EUR)\s?\d[\d.,]*|\d[\d.,]*\s?(?:€|EUR)/i)||[''])[0];
+          const locationEl = card.querySelector?.('[data-testid*=location],[class*=location],[class*=address],[class*=top--left]');
+          const location = (locationEl?.innerText || '').replace(/\s+/g,' ').trim();
+          const postal = ((location || text).match(/\b(?:[1-9]\d{3}|\d{5})\b/)||[''])[0];
+          const img = card.querySelector?.('img');
+          return { href:a.href, text:title, fullText:text, price, image:img?.src||'', postal, location, dataTestId:a.getAttribute('data-testid')||'' };
+        }).filter(x => x.href && x.text.length > 4)
+        """);
+            var pageItems=raw.Where(x => IsListingUrl(job.Platform, x.Href) && IsOrganicResult(job.Platform, x.DataTestId)).Select(x =>
+            {
+                var clean = x.Href.Split('#','?')[0].TrimEnd('/'); var id = ExtractId(clean);
+                var itemTitle = x.Text.Length > 180 ? x.Text[..180] : x.Text;
+                return new Listing(id, itemTitle, clean, x.Price, x.Image, x.Postal, x.Location, x.FullText);
+            }).Where(x=>MatchesKeyword(job,x.Title,x.SearchText)).GroupBy(x=>x.ExternalId).Select(x=>x.First()).ToList();
+            var added=0;foreach(var item in pageItems)if(collected.TryAdd(item.ExternalId,item))added++;
+            if(pageNumber>1&&(pageItems.Count==0||added==0))break;
+        }
+        return collected.Values.Take(500).ToList();
+    }
+
+    public async Task SendWhatsAppAsync(WhatsAppSettings settings, SearchJob job, IReadOnlyList<Listing> items)
+    {
+        if (!settings.Enabled) return;
+        var recipients = settings.Recipients.Count>0
+            ? settings.Recipients.Where(x=>x.Enabled&&x.Selected).Select(x=>(Name:x.Name,Phone:new string(x.Number.Where(char.IsDigit).ToArray()))).ToList()
+            : new List<(string Name,string Phone)>{(settings.RecipientName,new string(settings.RecipientNumber.Where(char.IsDigit).ToArray()))};
+        if(recipients.Count==0) throw new InvalidOperationException("WhatsApp ist aktiviert, aber kein Empfänger wurde ausgewählt.");
+        if(recipients.Any(x=>x.Phone.Length<8)) throw new InvalidOperationException("Mindestens eine ausgewählte WhatsApp-Nummer fehlt oder ist ungültig.");
+        await StartAsync();
+        var page = await _context!.NewPageAsync();
+        try
+        {
+            var deliveryErrors=new List<string>();
+            foreach(var recipient in recipients)
+            {
+                try
+                {
+                    foreach (var message in NotificationText.BuildChunks(job, items, 3000))
+                    {
+                        var target = $"https://web.whatsapp.com/send?phone={recipient.Phone}";
+                        await page.GotoAsync(target, new PageGotoOptions { WaitUntil=WaitUntilState.DOMContentLoaded, Timeout=45000 });
+                        var composer = page.Locator("footer [contenteditable='true']").Last;
+                        try { await composer.WaitForAsync(new LocatorWaitForOptions { State=WaitForSelectorState.Visible, Timeout=30000 }); }
+                        catch { throw new BrowserChallengeException("WhatsApp Web ist nicht angemeldet. Edge-Profil öffnen, QR-Code scannen und danach erneut testen."); }
+                        var verificationText=VerificationText(message);
+                        var before=CountOccurrences(Normalize(await page.Locator("body").InnerTextAsync()),verificationText);
+                        await composer.FillAsync(message);
+                        var send=page.Locator("button[aria-label='Senden'], button[aria-label='Send']").Last;
+                        await send.WaitForAsync(new LocatorWaitForOptions{State=WaitForSelectorState.Visible,Timeout=10000});
+                        await send.ClickAsync();
+                        var confirmed=false;
+                        for(var attempt=0;attempt<20&&!confirmed;attempt++)
+                        {
+                            await page.WaitForTimeoutAsync(500);
+                            var bodyText=await page.Locator("body").InnerTextAsync();
+                            var draft=(await composer.InnerTextAsync()).Trim();
+                            if(attempt==3&&!string.IsNullOrEmpty(draft))await composer.PressAsync("Enter");
+                            confirmed=string.IsNullOrEmpty(draft)&&CountOccurrences(Normalize(bodyText),verificationText)>before;
+                        }
+                        if(!confirmed)throw new InvalidOperationException("WhatsApp Web hat die gesendete Nachricht nicht im Chat bestätigt.");
+                    }
+                }
+                catch(Exception ex){deliveryErrors.Add($"{recipient.Name} ({recipient.Phone}): {ex.Message}");}
+            }
+            if(deliveryErrors.Count>0)throw new InvalidOperationException(string.Join(" | ",deliveryErrors));
+        }
+        finally { await page.CloseAsync(); }
+    }
+
+    public Task TestWhatsAppAsync(WhatsAppSettings settings) => SendWhatsAppAsync(
+        new WhatsAppSettings { Enabled=true, SendToFirst=settings.SendToFirst, RecipientName=settings.RecipientName, RecipientNumber=settings.RecipientNumber, SendToSecond=settings.SendToSecond, Recipient2Name=settings.Recipient2Name, Recipient2Number=settings.Recipient2Number },
+        new SearchJob { Name="Testsuche", Platform="MarktWächter" },
+        [new Listing("test", "Testnachricht erfolgreich", "https://example.com", "")]);
+    private static int CountOccurrences(string source,string value)
+    {
+        if(string.IsNullOrEmpty(value))return 0;var count=0;var index=0;
+        while((index=source.IndexOf(value,index,StringComparison.Ordinal))>=0){count++;index+=value.Length;}
+        return count;
+    }
+    private static string Normalize(string value)=>System.Text.RegularExpressions.Regex.Replace(value,"\\s+"," ").Trim();
+    private static string VerificationText(string value)
+    {
+        var normalized=Normalize(value);var first=normalized.TakeWhile(c=>!char.IsLetterOrDigit(c)).Count();
+        return first<0?normalized:normalized[first..];
+    }
+
+    public static string Fingerprint(string platform, Listing x)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes($"{platform}|{x.ExternalId}|{x.Url}"));
+        return Convert.ToHexString(bytes);
+    }
+    public async Task CloseAsync()
+    {
+        if (_context is not null) { await _context.CloseAsync(); _context = null; }
+        _playwright?.Dispose(); _playwright = null;
+    }
+    private static bool IsListingUrl(string platform,string url) => platform switch
+    {
+        "willhaben" => url.Contains("/iad/kaufen-und-verkaufen/d/",StringComparison.OrdinalIgnoreCase),
+        "Kleinanzeigen" => url.Contains("/s-anzeige/",StringComparison.OrdinalIgnoreCase),
+        "Vinted" => url.Contains("/items/",StringComparison.OrdinalIgnoreCase),
+        "eBay" => url.Contains("/itm/",StringComparison.OrdinalIgnoreCase),
+        _ => true
+    };
+    private static bool IsOrganicResult(string platform,string dataTestId) =>
+        platform!="willhaben" || dataTestId.StartsWith("search-result-entry-header-",StringComparison.OrdinalIgnoreCase);
+    private static bool MatchesKeyword(SearchJob job,string title,string searchText)
+    {
+        if(job.Platform!="willhaben")return true;
+        // In this mode Willhaben itself defines the result set. Applying another
+        // local text heuristic would incorrectly remove description matches.
+        if(job.MatchMode=="title_or_content")return true;
+        var match=System.Text.RegularExpressions.Regex.Match(new Uri(job.Url).Query,@"(?:^|[?&])keyword=([^&]+)",System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if(!match.Success)return true;
+        var keyword=Uri.UnescapeDataString(match.Groups[1].Value.Replace('+',' '));
+        var tokens=keyword.Split(' ',StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries).Where(x=>x.Length>1);
+        return tokens.All(x=>title.Contains(x,StringComparison.OrdinalIgnoreCase));
+    }
+    private static string SetQueryParameter(string url,string key,string value)
+    {
+        var uri=new Uri(url);var parts=uri.Query.TrimStart('?').Split('&',StringSplitOptions.RemoveEmptyEntries)
+            .Where(x=>!x.StartsWith(key+"=",StringComparison.OrdinalIgnoreCase)).ToList();
+        parts.Add($"{Uri.EscapeDataString(key)}={Uri.EscapeDataString(value)}");
+        var builder=new UriBuilder(uri){Query=string.Join("&",parts)};return builder.Uri.ToString();
+    }
+    private static string ExtractId(string url) => System.Text.RegularExpressions.Regex.Match(url,@"(?:[-/]|=)(\d{6,})(?:[/?&]|$)").Groups[1].Value is { Length: > 0 } id ? id : url;
+    public async ValueTask DisposeAsync()=>await CloseAsync();
+    private sealed class RawLink { public string Href { get; set; }=""; public string Text { get; set; }=""; public string FullText { get; set; }=""; public string Price { get; set; }=""; public string Image { get; set; }=""; public string Postal { get; set; }=""; public string Location { get; set; }=""; public string DataTestId { get; set; }=""; }
+}
+
+public sealed class BrowserChallengeException(string message) : Exception(message);
