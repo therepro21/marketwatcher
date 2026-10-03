@@ -5,7 +5,7 @@ namespace MarketWatcher;
 public static class AutoStartManager
 {
     private const string RunKey=@"Software\Microsoft\Windows\CurrentVersion\Run";
-    private const string ValueName="MarktWaechter";
+    private const string ValueName="MarketWatcher";
 
     public static bool IsEnabled()
     {

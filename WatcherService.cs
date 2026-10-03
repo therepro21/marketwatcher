@@ -50,6 +50,21 @@ public sealed class WatcherService : IAsyncDisposable
             _gate.Release();_refresh();
         }
     }
+    public async Task ResumeFromNowAsync(long id)
+    {
+        if(!await _gate.WaitAsync(0)){_log("Ein Suchlauf ist bereits aktiv.");return;}
+        try
+        {
+            var job=_repo.GetJob(id);if(job is null)return;
+            _log($"{job.Name}: aktueller Stand wird ohne Meldungen übernommen …");
+            var items=await _scanner.ScanAsync(job);
+            foreach(var item in items)_repo.AddSeen(job.Id,BrowserScanner.Fingerprint(job.Platform,item),item,false);
+            _repo.UpdateRun(job.Id,true,$"Fortgesetzt ab jetzt · {items.Count} aktuelle Treffer ausgeschlossen");
+            _repo.SetEnabled(job.Id,true);_log($"{job.Name}: fortgesetzt; Meldungen gelten ab jetzt.");
+        }
+        catch(Exception ex){_repo.SetEnabled(id,false);_log("Fortsetzen fehlgeschlagen: "+ex.Message);}
+        finally{try{await _scanner.CloseAsync();}catch{} _gate.Release();_refresh();}
+    }
     public async Task OpenProfileAsync()
     {
         await _gate.WaitAsync();
@@ -84,7 +99,7 @@ public sealed class WatcherService : IAsyncDisposable
         await _gate.WaitAsync();
         try
         {
-            var job=new SearchJob{Name="Testsuche",Platform="MarktWächter"};
+            var job=new SearchJob{Name="Testsuche",Platform="MarketWatcher"};
             await SendWhatsAppConfiguredAsync(settings,job,[new Listing("test","Automatische Testnachricht erfolgreich","https://example.com","")]);
         }
         finally{_gate.Release();}

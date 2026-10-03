@@ -16,10 +16,10 @@ public partial class MainWindow : Window
     {
         InitializeComponent();DataContext=this;_repo=new Repository(AppPaths.StateFile);_repo.Initialize();RefreshJobs();
         _watcher=new WatcherService(_repo,AddLog,RefreshJobs);AutoStartBox.IsChecked=AutoStartManager.IsEnabled();
-        var iconPath=Path.Combine(AppContext.BaseDirectory,"Assets","marktwachter.ico");
-        _trayIcon=new Forms.NotifyIcon{Icon=File.Exists(iconPath)?new Drawing.Icon(iconPath):Drawing.SystemIcons.Application,Text="MarktWächter läuft – Suchagent aktiv",Visible=true};
+        var iconPath=Path.Combine(AppContext.BaseDirectory,"Assets","marketwatcher.ico");
+        _trayIcon=new Forms.NotifyIcon{Icon=File.Exists(iconPath)?new Drawing.Icon(iconPath):Drawing.SystemIcons.Application,Text="MarketWatcher läuft – Suchagent aktiv",Visible=true};
         var menu=new Forms.ContextMenuStrip();
-        menu.Items.Add("MarktWächter öffnen",null,(_,_)=>Dispatcher.Invoke(RestoreFromTray));
+        menu.Items.Add("MarketWatcher öffnen",null,(_,_)=>Dispatcher.Invoke(RestoreFromTray));
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("Beenden",null,(_,_)=>Dispatcher.Invoke(()=>{_exitRequested=true;Close();}));
         _trayIcon.ContextMenuStrip=menu;_trayIcon.DoubleClick+=(_,_)=>Dispatcher.Invoke(RestoreFromTray);
@@ -30,7 +30,7 @@ public partial class MainWindow : Window
             {
                 await _watcher.StartAsync();AgentStatus.Text="● Agent aktiv";
                 var automaticStart=Environment.GetCommandLineArgs().Any(x=>x.Equals("--autostart",StringComparison.OrdinalIgnoreCase));
-                if(_repo.RequiresReauthentication)MessageBox.Show("MarktWächter wurde unter einem anderen Windows-Benutzer oder auf einem anderen Computer gestartet. Suchen und Ausschlussliste wurden übernommen. Bitte E-Mail-/Telegram-Zugangsdaten neu eingeben und WhatsApp Web per QR-Code neu anmelden.","Neue Windows-Umgebung erkannt");
+                if(_repo.RequiresReauthentication)MessageBox.Show("MarketWatcher wurde unter einem anderen Windows-Benutzer oder auf einem anderen Computer gestartet. Suchen und Ausschlussliste wurden übernommen. Bitte E-Mail-/Telegram-Zugangsdaten neu eingeben und WhatsApp Web per QR-Code neu anmelden.","Neue Windows-Umgebung erkannt");
                 if(automaticStart){WindowState=WindowState.Minimized;Hide();}
                 else{Show();WindowState=WindowState.Normal;Activate();}
             }
@@ -57,7 +57,15 @@ public partial class MainWindow : Window
         job.Id=_repo.AddJob(job);RefreshJobs();UrlBox.Clear();NameBox.Clear();AddLog($"Suche hinzugefügt: {job.Name}");await _watcher.RunJobAsync(job.Id,true);
     }
     private async void RunNow_Click(object sender,RoutedEventArgs e){if(SearchGrid.SelectedItem is SearchJob j)await _watcher.RunJobAsync(j.Id,false);}
-    private void Toggle_Click(object sender,RoutedEventArgs e){if(SearchGrid.SelectedItem is SearchJob j){_repo.SetEnabled(j.Id,!j.Enabled);RefreshJobs();}}
+    private async void Toggle_Click(object sender,RoutedEventArgs e)
+    {
+        if(SearchGrid.SelectedItem is not SearchJob job){MessageBox.Show("Bitte zuerst eine Suche auswählen.");return;}
+        if(job.Enabled){_repo.SetEnabled(job.Id,false);AddLog($"{job.Name}: pausiert.");RefreshJobs();return;}
+        var answer=MessageBox.Show("Soll MarketWatcher auch alle während der Pause verpassten Treffer melden?\n\nJa = verpasste Treffer sofort melden\nNein = aktuellen Stand still übernehmen und erst ab jetzt melden\nAbbrechen = pausiert lassen","Suche fortsetzen",MessageBoxButton.YesNoCancel,MessageBoxImage.Question);
+        if(answer==MessageBoxResult.Cancel)return;
+        if(answer==MessageBoxResult.Yes){_repo.SetEnabled(job.Id,true);RefreshJobs();await _watcher.RunJobAsync(job.Id,false);}
+        else await _watcher.ResumeFromNowAsync(job.Id);
+    }
     private void Delete_Click(object sender,RoutedEventArgs e){if(SearchGrid.SelectedItem is not SearchJob j)return;if(MessageBox.Show($"Suche „{j.Name}“ löschen? Die globale Ausschlussdatenbank bleibt erhalten.","Löschen",MessageBoxButton.YesNo)==MessageBoxResult.Yes){_repo.DeleteJob(j.Id);RefreshJobs();}}
     private void Email_Click(object sender,RoutedEventArgs e){new EmailSettingsWindow(_repo,_watcher){Owner=this}.ShowDialog();AutoStartBox.IsChecked=AutoStartManager.IsEnabled();}
     private void AssignRecipients_Click(object sender,RoutedEventArgs e)
@@ -72,6 +80,7 @@ public partial class MainWindow : Window
         catch(Exception ex){MessageBox.Show("Autostart konnte nicht geändert werden: "+ex.Message);AutoStartBox.IsChecked=AutoStartManager.IsEnabled();}
     }
     private async void OpenProfile_Click(object sender,RoutedEventArgs e){try{await _watcher.OpenProfileAsync();}catch(Exception ex){MessageBox.Show(ex.Message);}}
+    private void PlatformLink_Click(object sender,System.Windows.Navigation.RequestNavigateEventArgs e){Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri){UseShellExecute=true});e.Handled=true;}
     private void AddLog(string text)=>Dispatcher.Invoke(()=>{Logs.Insert(0,$"{DateTime.Now:HH:mm:ss}  {text}");while(Logs.Count>200)Logs.RemoveAt(Logs.Count-1);});
     private void RefreshJobs()=>Dispatcher.Invoke(()=>{Searches.Clear();foreach(var x in _repo.GetJobs())Searches.Add(x);});
 }

@@ -25,21 +25,22 @@ public sealed class BrowserScanner : IAsyncDisposable
         await StartAsync();
         var page = _context!.Pages.FirstOrDefault() ?? await _context.NewPageAsync();
         var collected=new Dictionary<string,Listing>(StringComparer.OrdinalIgnoreCase);
-        var maxPages=job.Platform=="willhaben"?10:1;
+        var maxPages=job.Platform is "willhaben" or "Vinted" or "Quoka"?10:1;
         var baseUrl=job.Platform=="willhaben"?SetQueryParameter(job.Url,"rows","90"):job.Url;
+        var pageKey=job.Platform=="Quoka"?"pag":"page";
         for(var pageNumber=1;pageNumber<=maxPages;pageNumber++)
         {
-            var targetUrl=pageNumber==1?SetQueryParameter(baseUrl,"page","1"):SetQueryParameter(baseUrl,"page",pageNumber.ToString());
+            var targetUrl=SetQueryParameter(baseUrl,pageKey,pageNumber.ToString());
             await page.GotoAsync(targetUrl, new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 45000 });
             await page.WaitForTimeoutAsync(1800);
             var title = await page.TitleAsync();
             var body = (await page.Locator("body").InnerTextAsync(new LocatorInnerTextOptions { Timeout = 10000 })).ToLowerInvariant();
-            if (title.Contains("just a moment", StringComparison.OrdinalIgnoreCase) || body.Contains("captcha") || body.Contains("verify you are human") || body.Contains("sicherheitsüberprüfung"))
+            if (title.Contains("just a moment", StringComparison.OrdinalIgnoreCase) || (job.Platform!="Quoka"&&(body.Contains("captcha") || body.Contains("verify you are human") || body.Contains("sicherheitsüberprüfung"))))
                 throw new BrowserChallengeException("Browser-Prüfung erkannt – Edge-Profil manuell öffnen und bestätigen.");
 
             // Willhaben adds more organic cards while the page is scrolled. Read
             // only after the document height has remained unchanged repeatedly.
-            if(job.Platform=="willhaben")
+            if(job.Platform is "willhaben" or "Vinted" or "Tutti")
             {
                 var stable=0;var previousHeight=0d;
                 for(var scroll=0;scroll<30&&stable<3;scroll++)
@@ -54,21 +55,22 @@ public sealed class BrowserScanner : IAsyncDisposable
 
             var raw = await page.Locator("a[href]").EvaluateAllAsync<RawLink[]>("""
         els => els.map(a => {
-          const card = a.closest('article, li, [data-testid*=item], [class*=item], [class*=ad]') || a;
+          const card = a.closest('[data-testid="grid-item"]') || a.closest('article, li, [data-testid*=item], [class*=item], [class*=ad]') || a;
           const text = (card.innerText || a.innerText || '').replace(/\s+/g,' ').trim();
-          const titleEl = card.querySelector?.('h2,h3,[data-testid*=title],[class*=title]');
+          const titleEl = card.querySelector?.('[data-testid$="--description-title"],h2,h3,[data-testid*=title],[class*=title]');
           const title = (titleEl?.innerText || a.innerText || text).replace(/\s+/g,' ').trim();
           const price = (text.match(/(?:€|EUR)\s?\d[\d.,]*|\d[\d.,]*\s?(?:€|EUR)/i)||[''])[0];
           const locationEl = card.querySelector?.('[data-testid*=location],[class*=location],[class*=address],[class*=top--left]');
           const location = (locationEl?.innerText || '').replace(/\s+/g,' ').trim();
           const postal = ((location || text).match(/\b(?:[1-9]\d{3}|\d{5})\b/)||[''])[0];
           const img = card.querySelector?.('img');
-          return { href:a.href, text:title, fullText:text, price, image:img?.currentSrc||img?.src||'', postal, location, dataTestId:a.getAttribute('data-testid')||'' };
+          const image = img?.currentSrc || img?.src || img?.getAttribute('data-src') || (img?.getAttribute('srcset')||'').split(/[ ,]/)[0] || '';
+          return { href:a.href, text:title, fullText:text, price, image, postal, location, dataTestId:a.getAttribute('data-testid')||'', externalId:card.getAttribute?.('data-articleid')||'' };
         }).filter(x => x.href && x.text.length > 4)
         """);
             var pageItems=raw.Where(x => IsListingUrl(job.Platform, x.Href) && IsOrganicResult(job.Platform, x.DataTestId)).Select(x =>
             {
-                var clean = x.Href.Split('#','?')[0].TrimEnd('/'); var id = ExtractId(clean);
+                var clean = x.Href.Split('#','?')[0].TrimEnd('/'); var id = string.IsNullOrWhiteSpace(x.ExternalId)?ExtractId(job.Platform,clean):x.ExternalId;
                 var itemTitle = x.Text.Length > 180 ? x.Text[..180] : x.Text;
                 return new Listing(id, itemTitle, clean, x.Price, x.Image, x.Postal, x.Location, x.FullText);
             }).Where(x=>MatchesKeyword(job,x.Title,x.SearchText)).GroupBy(x=>x.ExternalId).Select(x=>x.First()).ToList();
@@ -129,7 +131,7 @@ public sealed class BrowserScanner : IAsyncDisposable
 
     public Task TestWhatsAppAsync(WhatsAppSettings settings) => SendWhatsAppAsync(
         new WhatsAppSettings { Enabled=true, SendToFirst=settings.SendToFirst, RecipientName=settings.RecipientName, RecipientNumber=settings.RecipientNumber, SendToSecond=settings.SendToSecond, Recipient2Name=settings.Recipient2Name, Recipient2Number=settings.Recipient2Number },
-        new SearchJob { Name="Testsuche", Platform="MarktWächter" },
+        new SearchJob { Name="Testsuche", Platform="MarketWatcher" },
         [new Listing("test", "Testnachricht erfolgreich", "https://example.com", "")]);
     private static int CountOccurrences(string source,string value)
     {
@@ -160,6 +162,9 @@ public sealed class BrowserScanner : IAsyncDisposable
         "Kleinanzeigen" => url.Contains("/s-anzeige/",StringComparison.OrdinalIgnoreCase),
         "Vinted" => url.Contains("/items/",StringComparison.OrdinalIgnoreCase),
         "eBay" => url.Contains("/itm/",StringComparison.OrdinalIgnoreCase),
+        "markt.de" => System.Text.RegularExpressions.Regex.IsMatch(url,@"/a/[0-9a-f]{8}/?",System.Text.RegularExpressions.RegexOptions.IgnoreCase),
+        "Quoka" => url.Contains("/anzeige/",StringComparison.OrdinalIgnoreCase),
+        "Tutti" => System.Text.RegularExpressions.Regex.IsMatch(url,@"/de/vi/\d+(?:[/?#]|$)",System.Text.RegularExpressions.RegexOptions.IgnoreCase),
         _ => true
     };
     private static bool IsOrganicResult(string platform,string dataTestId) =>
@@ -183,9 +188,13 @@ public sealed class BrowserScanner : IAsyncDisposable
         parts.Add($"{Uri.EscapeDataString(key)}={Uri.EscapeDataString(value)}");
         var builder=new UriBuilder(uri){Query=string.Join("&",parts)};return builder.Uri.ToString();
     }
-    private static string ExtractId(string url) => System.Text.RegularExpressions.Regex.Match(url,@"(?:[-/]|=)(\d{6,})(?:[/?&]|$)").Groups[1].Value is { Length: > 0 } id ? id : url;
+    private static string ExtractId(string platform,string url)
+    {
+        if(platform=="markt.de")return System.Text.RegularExpressions.Regex.Match(url,@"/a/([0-9a-f]{8})(?:/|$)",System.Text.RegularExpressions.RegexOptions.IgnoreCase).Groups[1].Value is {Length:>0} marketId?marketId:url;
+        return System.Text.RegularExpressions.Regex.Match(url,@"(?:[-/]|=)(\d{6,})(?:[-/?&]|$)").Groups[1].Value is { Length: > 0 } id ? id : url;
+    }
     public async ValueTask DisposeAsync()=>await CloseAsync();
-    private sealed class RawLink { public string Href { get; set; }=""; public string Text { get; set; }=""; public string FullText { get; set; }=""; public string Price { get; set; }=""; public string Image { get; set; }=""; public string Postal { get; set; }=""; public string Location { get; set; }=""; public string DataTestId { get; set; }=""; }
+    private sealed class RawLink { public string Href { get; set; }=""; public string Text { get; set; }=""; public string FullText { get; set; }=""; public string Price { get; set; }=""; public string Image { get; set; }=""; public string Postal { get; set; }=""; public string Location { get; set; }=""; public string DataTestId { get; set; }=""; public string ExternalId { get; set; }=""; }
 }
 
 public sealed class BrowserChallengeException(string message) : Exception(message);

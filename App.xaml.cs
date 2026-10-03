@@ -16,7 +16,7 @@ public partial class App : System.Windows.Application
     private void OnDispatcherError(object sender,DispatcherUnhandledExceptionEventArgs e)
     {
         WriteCrash(e.Exception);e.Handled=true;
-        System.Windows.MessageBox.Show("Ein Fehler wurde abgefangen und protokolliert:\n"+e.Exception.Message,"MarktWächter");
+        System.Windows.MessageBox.Show("Ein Fehler wurde abgefangen und protokolliert:\n"+e.Exception.Message,"MarketWatcher");
     }
     private static void WriteCrash(Exception? ex)
     {

@@ -30,7 +30,7 @@ public static class TelegramSender
 
     public static async Task TestAsync(TelegramSettings settings)
     {
-        var job = new SearchJob { Name="Testsuche", Platform="MarktWächter" };
+        var job = new SearchJob { Name="Testsuche", Platform="MarketWatcher" };
         await SendAsync(settings.withEnabled(), job, [new Listing("test", "Testnachricht erfolgreich", "https://example.com", "")]);
     }
     private static TelegramSettings withEnabled(this TelegramSettings s) { foreach(var x in s.Recipients)x.Selected=x.Enabled;return new(){Enabled=true,ChatId=s.ChatId,ProtectedBotToken=s.ProtectedBotToken,Recipients=s.Recipients,IncludeImages=s.IncludeImages}; }
