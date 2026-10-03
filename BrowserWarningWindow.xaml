@@ -2,7 +2,7 @@
  <Border Margin="18" Padding="22" CornerRadius="12" Background="#48151F" BorderBrush="#FF526B" BorderThickness="2"><StackPanel>
   <TextBlock Text="PORTAL" Foreground="#FF9AAA" FontSize="12" FontWeight="Bold"/><TextBlock x:Name="PlatformText" Foreground="White" FontSize="30" FontWeight="Bold" Margin="0,1,0,12"/>
   <TextBlock Text="SUCHBEGRIFF / SUCHE" Foreground="#FF9AAA" FontSize="12" FontWeight="Bold"/><TextBlock x:Name="SearchText" Foreground="White" FontSize="21" FontWeight="Bold" TextWrapping="Wrap" Margin="0,1,0,14"/>
-  <TextBlock Text="⚠ Browser-Prüfung erkannt" Foreground="#FF8293" FontSize="18" FontWeight="Bold"/><TextBlock x:Name="DetailText" Foreground="#FFD9DE" TextWrapping="Wrap" Margin="0,5,0,0"/>
+  <TextBlock x:Name="ChallengeText" Text="⚠ Browser-Prüfung erkannt" Foreground="#FF8293" FontSize="18" FontWeight="Bold"/><TextBlock x:Name="DetailText" Foreground="#FFD9DE" TextWrapping="Wrap" Margin="0,5,0,0"/>
   <TextBlock Text="Die Suche wurde sicherheitshalber pausiert. Öffne Edge, löse CAPTCHA bzw. Cookie-Abfrage und schließe Edge vollständig. Danach kannst du die Suche in MarketWatcher fortsetzen." Foreground="#FFD9DE" TextWrapping="Wrap" Margin="0,12,0,16"/>
   <StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Button Content="Später" Click="Later_Click" Padding="16,9" Margin="4" Background="#6D3440" Foreground="White" BorderThickness="0"/><Button Content="Jetzt in Edge beheben" Click="Open_Click" Padding="16,9" Margin="4" Background="#E33E59" Foreground="White" BorderThickness="0"/></StackPanel>
  </StackPanel></Border>

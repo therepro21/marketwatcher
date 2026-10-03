@@ -52,8 +52,9 @@ public sealed class BrowserScanner : IAsyncDisposable
             await page.WaitForTimeoutAsync(1800);
             var title = await page.TitleAsync();
             var body = (await page.Locator("body").InnerTextAsync(new LocatorInnerTextOptions { Timeout = 10000 })).ToLowerInvariant();
-            if (IsManualInterventionRequired(title,body)||await HasVisibleChallengeAsync(page)||await HasVisibleConsentAsync(page))
-                throw new BrowserChallengeException(job.Platform,job.Name,targetUrl,"CAPTCHA, Cloudflare- oder Cookie-Prüfung erkannt.");
+            if(await TryRejectCookiesAsync(page)){await page.WaitForTimeoutAsync(600);body=(await page.Locator("body").InnerTextAsync()).ToLowerInvariant();}
+            var challenge=await DetectInterventionAsync(page,title,body);
+            if(challenge is not null)throw new BrowserChallengeException(job.Platform,job.Name,targetUrl,challenge);
 
             // Willhaben adds more organic cards while the page is scrolled. Read
             // only after the document height has remained unchanged repeatedly.
@@ -182,22 +183,30 @@ public sealed class BrowserScanner : IAsyncDisposable
         catch{try{if(!process.HasExited)process.Kill();}catch{}}
         finally{process.Dispose();}
     }
-    private static bool IsManualInterventionRequired(string title,string body)
+    private static async Task<string?> DetectInterventionAsync(IPage page,string title,string body)
     {
         var text=(title+"\n"+body).ToLowerInvariant();
-        return text.Contains("just a moment")||text.Contains("nur einen moment")||text.Contains("verify you are human")||
-               text.Contains("bestätigen sie, dass sie ein mensch")||text.Contains("sicherheitsüberprüfung")||
-               text.Contains("security verification");
+        if(text.Contains("just a moment")||text.Contains("nur einen moment")||text.Contains("cloudflare ray id")||await AnyVisibleAsync(page,new[]{"[id*='cf-chl' i]","iframe[src*='challenge-platform' i]"}))
+            return "Cloudflare-Sicherheitsprüfung erkannt.";
+        if(text.Contains("verify you are human")||text.Contains("bestätigen sie, dass sie ein mensch")||text.Contains("sicherheitsüberprüfung")||text.Contains("security verification")||await AnyVisibleAsync(page,new[]{"iframe[src*='captcha' i]",".g-recaptcha","[data-sitekey]","[class*='captcha' i]"}))
+            return "CAPTCHA bzw. menschliche Bestätigung erkannt.";
+        if(await HasVisibleConsentAsync(page))return "Cookie-Einwilligung erkannt; eine eindeutige Option zum Ablehnen aller Cookies war nicht verfügbar.";
+        return null;
     }
-    private static async Task<bool> HasVisibleChallengeAsync(IPage page)
+    private static async Task<bool> TryRejectCookiesAsync(IPage page)
     {
-        var selectors=new[]{"iframe[src*='captcha' i]","iframe[src*='challenge' i]",".g-recaptcha","[data-sitekey]","[id*='cf-chl' i]","[class*='captcha' i]"};
-        foreach(var selector in selectors)try{if(await page.Locator(selector).First.IsVisibleAsync())return true;}catch{}
+        var selectors=new[]{"#onetrust-reject-all-handler","button:has-text('Alle ablehnen')","button:has-text('Alles ablehnen')","button:has-text('Nur notwendige')","button:has-text('Nur erforderliche')","button:has-text('Reject all')","button:has-text('Reject optional')","button:has-text('Necessary only')"};
+        foreach(var selector in selectors)try{var button=page.Locator(selector).First;if(await button.IsVisibleAsync()){await button.ClickAsync();return true;}}catch{}
         return false;
     }
     private static async Task<bool> HasVisibleConsentAsync(IPage page)
     {
         var selectors=new[]{"#onetrust-banner-sdk","[role=dialog] button:has-text('Cookies akzeptieren')","[role=dialog] button:has-text('Alle akzeptieren')","[role=dialog] button:has-text('Accept cookies')","[role=dialog] button:has-text('Accept all')"};
+        foreach(var selector in selectors)try{if(await page.Locator(selector).First.IsVisibleAsync())return true;}catch{}
+        return false;
+    }
+    private static async Task<bool> AnyVisibleAsync(IPage page,IEnumerable<string> selectors)
+    {
         foreach(var selector in selectors)try{if(await page.Locator(selector).First.IsVisibleAsync())return true;}catch{}
         return false;
     }
