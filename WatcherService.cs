@@ -6,6 +6,7 @@ public sealed class WatcherService : IAsyncDisposable
     private readonly Repository _repo; private readonly Action<string> _log; private readonly Action _refresh;
     private readonly BrowserScanner _scanner = new(); private readonly CancellationTokenSource _stop = new();
     private readonly SemaphoreSlim _gate = new(1,1);private readonly SemaphoreSlim _wake = new(0,1); private Task? _loop;
+    private System.Diagnostics.Process? _manualEdgeProcess;
     public WatcherService(Repository repo, Action<string> log, Action refresh){_repo=repo;_log=log;_refresh=refresh;}
     public Task StartAsync(){_loop=LoopAsync();return Task.CompletedTask;}
     private async Task LoopAsync()
@@ -90,7 +91,7 @@ public sealed class WatcherService : IAsyncDisposable
             var start=new System.Diagnostics.ProcessStartInfo(edge){UseShellExecute=true};
             start.UseShellExecute=false;start.ArgumentList.Add($"--user-data-dir={System.IO.Path.GetFullPath(AppPaths.EdgeProfile)}");start.ArgumentList.Add("--new-window");start.ArgumentList.Add("--window-position=100,100");start.ArgumentList.Add("--window-size=1400,900");start.ArgumentList.Add("--start-maximized");
             if(!string.IsNullOrWhiteSpace(url))start.ArgumentList.Add(url);
-            System.Diagnostics.Process.Start(start);
+            _manualEdgeProcess=System.Diagnostics.Process.Start(start);
             _log("Edge-Profil geöffnet. Nach Anmeldung/Prüfung Edge schließen und die Suche wieder aktivieren.");
         }
         finally
@@ -98,6 +99,32 @@ public sealed class WatcherService : IAsyncDisposable
             try{await _scanner.CloseAsync();}catch(Exception ex){_log("Browser konnte nicht vollständig geschlossen werden: "+ex.Message);}
             _gate.Release();
         }
+    }
+    public async Task CompleteManualInterventionAsync()
+    {
+        await _gate.WaitAsync();
+        try{await CompleteManualInterventionCoreAsync();}
+        finally{_gate.Release();}
+    }
+    private async Task CompleteManualInterventionCoreAsync()
+    {
+        var process=_manualEdgeProcess;_manualEdgeProcess=null;
+        if(process is not null)try{if(!process.HasExited){process.Kill(true);await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(8));}}catch{}finally{process.Dispose();}
+        await CleanupProfileEdgeProcessesAsync();
+        _log("Sichtbarer Prüf-Browser geschlossen. Weitere Läufe starten wieder unsichtbar.");
+    }
+    private static async Task CleanupProfileEdgeProcessesAsync()
+    {
+        var profile=System.IO.Path.GetFullPath(AppPaths.EdgeProfile).Replace("'","''");
+        var script="$profile='"+profile+"'; Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($profile) } | Select-Object -ExpandProperty ProcessId";
+        var start=new System.Diagnostics.ProcessStartInfo("powershell.exe"){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
+        start.ArgumentList.Add("-NoProfile");start.ArgumentList.Add("-NonInteractive");start.ArgumentList.Add("-WindowStyle");start.ArgumentList.Add("Hidden");start.ArgumentList.Add("-Command");start.ArgumentList.Add(script);
+        try
+        {
+            using var query=System.Diagnostics.Process.Start(start);if(query is null)return;var output=await query.StandardOutput.ReadToEndAsync();await query.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            foreach(var line in output.Split(new[]{'\r','\n'},StringSplitOptions.RemoveEmptyEntries))if(int.TryParse(line.Trim(),out var pid))try{using var edge=System.Diagnostics.Process.GetProcessById(pid);edge.Kill(true);await edge.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));}catch{}
+        }
+        catch{}
     }
     private async Task<List<string>> SendNotificationsAsync(SearchJob job,IReadOnlyList<Listing> items)
     {
@@ -140,7 +167,7 @@ public sealed class WatcherService : IAsyncDisposable
         NotifyScheduleChanged();
         if(_loop is not null)try{await _loop;}catch(OperationCanceledException){}catch(Exception ex){_log("Scheduler beim Beenden: "+ex.Message);}
         await _gate.WaitAsync();
-        try{await _scanner.DisposeAsync();}finally{_gate.Release();}
+        try{await _scanner.DisposeAsync();await CompleteManualInterventionCoreAsync();await CleanupProfileEdgeProcessesAsync();}finally{_gate.Release();}
         _stop.Dispose();_gate.Dispose();_wake.Dispose();
     }
 }
