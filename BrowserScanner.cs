@@ -52,7 +52,7 @@ public sealed class BrowserScanner : IAsyncDisposable
             await page.WaitForTimeoutAsync(1800);
             var title = await page.TitleAsync();
             var body = (await page.Locator("body").InnerTextAsync(new LocatorInnerTextOptions { Timeout = 10000 })).ToLowerInvariant();
-            if (IsManualInterventionRequired(title,body)||await HasVisibleConsentAsync(page))
+            if (IsManualInterventionRequired(title,body)||await HasVisibleChallengeAsync(page)||await HasVisibleConsentAsync(page))
                 throw new BrowserChallengeException(job.Name,targetUrl,"CAPTCHA, Cloudflare- oder Cookie-Prüfung erkannt.");
 
             // Willhaben adds more organic cards while the page is scrolled. Read
@@ -187,7 +187,13 @@ public sealed class BrowserScanner : IAsyncDisposable
         var text=(title+"\n"+body).ToLowerInvariant();
         return text.Contains("just a moment")||text.Contains("nur einen moment")||text.Contains("verify you are human")||
                text.Contains("bestätigen sie, dass sie ein mensch")||text.Contains("sicherheitsüberprüfung")||
-               text.Contains("security verification")||text.Contains("captcha")||text.Contains("cf-chl-")||text.Contains("challenge-platform");
+               text.Contains("security verification");
+    }
+    private static async Task<bool> HasVisibleChallengeAsync(IPage page)
+    {
+        var selectors=new[]{"iframe[src*='captcha' i]","iframe[src*='challenge' i]",".g-recaptcha","[data-sitekey]","[id*='cf-chl' i]","[class*='captcha' i]"};
+        foreach(var selector in selectors)try{if(await page.Locator(selector).First.IsVisibleAsync())return true;}catch{}
+        return false;
     }
     private static async Task<bool> HasVisibleConsentAsync(IPage page)
     {

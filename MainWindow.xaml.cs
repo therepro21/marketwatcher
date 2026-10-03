@@ -10,7 +10,7 @@ using MessageBox=System.Windows.MessageBox;
 namespace MarketWatcher;
 public partial class MainWindow : Window
 {
-    private readonly Repository _repo; private readonly WatcherService _watcher; private readonly Forms.NotifyIcon _trayIcon; private bool _shutdownComplete; private bool _exitRequested;
+    private readonly Repository _repo; private readonly WatcherService _watcher; private readonly Forms.NotifyIcon _trayIcon; private bool _shutdownComplete; private bool _exitRequested;private BrowserWarningWindow? _browserWarning;
     public ObservableCollection<SearchJob> Searches { get; }=[]; public ObservableCollection<string> Logs { get; }=[];
     public MainWindow()
     {
@@ -83,7 +83,9 @@ public partial class MainWindow : Window
     private void ShowBrowserWarning(BrowserChallengeException challenge)=>Dispatcher.BeginInvoke(() =>
     {
         RestoreFromTray();AgentStatus.Text="● Eingabe erforderlich";AgentStatus.Foreground=new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255,95,95));
-        new BrowserWarningWindow(challenge.SearchName,challenge.Message,challenge.Url,async url=>await _watcher.OpenProfileAsync(url)){Owner=this}.ShowDialog();
+        if(_browserWarning is null){_browserWarning=new BrowserWarningWindow(challenge.SearchName,challenge.Message,challenge.Url,async url=>await _watcher.OpenProfileAsync(url));_browserWarning.Closed+=(_,_)=>_browserWarning=null;_browserWarning.Show();}
+        else _browserWarning.UpdateChallenge(challenge.SearchName,challenge.Message,challenge.Url);
+        _browserWarning.Activate();
     });
     private void PlatformLink_Click(object sender,System.Windows.Navigation.RequestNavigateEventArgs e){Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri){UseShellExecute=true});e.Handled=true;}
     private void AddLog(string text)=>Dispatcher.Invoke(()=>{Logs.Insert(0,$"{DateTime.Now:HH:mm:ss}  {text}");while(Logs.Count>200)Logs.RemoveAt(Logs.Count-1);});

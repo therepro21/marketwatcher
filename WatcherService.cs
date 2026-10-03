@@ -33,6 +33,7 @@ public sealed class WatcherService : IAsyncDisposable
         {
             var job=_repo.GetJob(id); if(job is null)return; _log($"Prüfe {job.Name} …");
             var items=await _scanner.ScanAsync(job); var initial=!job.Initialized; var fresh=new List<Listing>();
+            if(_repo.GetJob(id)?.Enabled!=true){_log($"{job.Name}: Prüfung abgebrochen, weil die Suche pausiert wurde.");return;}
             foreach(var item in items) if(_repo.AddSeen(job.Id,BrowserScanner.Fingerprint(job.Platform,item),item,!initial)) fresh.Add(item);
             if(initial){_repo.UpdateRun(job.Id,true,$"Basisbestand: {items.Count} Treffer");_log($"{job.Name}: {items.Count} bestehende Treffer ausgeschlossen.");}
             else if(fresh.Count==0){_repo.UpdateRun(job.Id,true,$"Keine Änderungen · {items.Count} Treffer");_log($"{job.Name}: nichts Neues.");}
@@ -74,7 +75,7 @@ public sealed class WatcherService : IAsyncDisposable
             await _scanner.CloseAsync();
             var edge=BrowserFinder.FindEdge()??throw new InvalidOperationException("Microsoft Edge wurde nicht gefunden.");
             var start=new System.Diagnostics.ProcessStartInfo(edge){UseShellExecute=true};
-            start.ArgumentList.Add($"--user-data-dir={System.IO.Path.GetFullPath(AppPaths.EdgeProfile)}");start.ArgumentList.Add("--new-window");
+            start.UseShellExecute=false;start.ArgumentList.Add($"--user-data-dir={System.IO.Path.GetFullPath(AppPaths.EdgeProfile)}");start.ArgumentList.Add("--new-window");start.ArgumentList.Add("--window-position=100,100");start.ArgumentList.Add("--window-size=1400,900");start.ArgumentList.Add("--start-maximized");
             if(!string.IsNullOrWhiteSpace(url))start.ArgumentList.Add(url);
             System.Diagnostics.Process.Start(start);
             _log("Edge-Profil geöffnet. Nach Anmeldung/Prüfung Edge schließen und die Suche wieder aktivieren.");
