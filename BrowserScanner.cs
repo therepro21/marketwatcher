@@ -178,6 +178,7 @@ public sealed class BrowserScanner : IAsyncDisposable
         _context=null;
         _playwright?.Dispose(); _playwright = null;
         await StopOwnedEdgeAsync();
+        CleanDisposableCaches();
     }
     private async Task StopOwnedEdgeAsync()
     {
@@ -202,6 +203,15 @@ public sealed class BrowserScanner : IAsyncDisposable
         }
     }
     [DllImport("user32.dll")]private static extern bool ShowWindowAsync(IntPtr hWnd,int nCmdShow);
+    public static void CleanDisposableCaches()
+    {
+        var profile=Path.GetFullPath(AppPaths.EdgeProfile);
+        var disposable=new[]{
+            Path.Combine(profile,"Default","Cache"),Path.Combine(profile,"Default","Code Cache"),Path.Combine(profile,"Default","GPUCache"),
+            Path.Combine(profile,"Default","DawnGraphiteCache"),Path.Combine(profile,"Default","DawnWebGPUCache"),Path.Combine(profile,"BrowserMetrics"),
+            Path.Combine(profile,"DeferredBrowserMetrics"),Path.Combine(profile,"component_crx_cache"),Path.Combine(profile,"GrShaderCache"),Path.Combine(profile,"ShaderCache")};
+        foreach(var path in disposable)try{if(Directory.Exists(path)&&Path.GetFullPath(path).StartsWith(profile+Path.DirectorySeparatorChar,StringComparison.OrdinalIgnoreCase))Directory.Delete(path,true);}catch{}
+    }
     private static async Task<string?> DetectInterventionAsync(IPage page,string title,string body)
     {
         var text=(title+"\n"+body).ToLowerInvariant();

@@ -8,6 +8,8 @@ public partial class App : System.Windows.Application
 {
     protected override void OnStartup(StartupEventArgs e)
     {
+        AppPaths.CleanupLegacyDeployment();
+        BrowserScanner.CleanDisposableCaches();
         DispatcherUnhandledException+=OnDispatcherError;
         AppDomain.CurrentDomain.UnhandledException+=(_,args)=>WriteCrash(args.ExceptionObject as Exception);
         TaskScheduler.UnobservedTaskException+=(_,args)=>{WriteCrash(args.Exception);args.SetObserved();};

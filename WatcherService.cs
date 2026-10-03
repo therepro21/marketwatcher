@@ -111,6 +111,7 @@ public sealed class WatcherService : IAsyncDisposable
         var process=_manualEdgeProcess;_manualEdgeProcess=null;
         if(process is not null)try{if(!process.HasExited){process.Kill(true);await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(8));}}catch{}finally{process.Dispose();}
         await CleanupProfileEdgeProcessesAsync();
+        BrowserScanner.CleanDisposableCaches();
         _log("Sichtbarer Prüf-Browser geschlossen. Weitere Läufe starten wieder unsichtbar.");
     }
     private static async Task CleanupProfileEdgeProcessesAsync()

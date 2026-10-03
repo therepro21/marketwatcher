@@ -9,6 +9,21 @@ public static class AppPaths
     public static readonly string BackupDirectory = Path.Combine(Root, "backups");
     public static readonly string EdgeProfile = Path.Combine(Root, "EdgeProfile");
     static AppPaths() { Directory.CreateDirectory(Root); Directory.CreateDirectory(EdgeProfile); Directory.CreateDirectory(BackupDirectory); }
+    public static void CleanupLegacyDeployment()
+    {
+        var baseDirectory=Path.GetFullPath(AppContext.BaseDirectory);
+        foreach(var name in new[]{"cs","es","fr","it","ja","ko","pl","pt-BR","ru","tr","zh-Hans","zh-Hant"})
+        {
+            var path=Path.Combine(baseDirectory,name);try{if(Directory.Exists(path))Directory.Delete(path,true);}catch{}
+        }
+        foreach(var file in Directory.EnumerateFiles(baseDirectory))
+        {
+            var name=Path.GetFileName(file);var remove=Path.GetExtension(file).Equals(".dll",StringComparison.OrdinalIgnoreCase)||
+                name.EndsWith(".deps.json",StringComparison.OrdinalIgnoreCase)||name.EndsWith(".runtimeconfig.json",StringComparison.OrdinalIgnoreCase)||
+                name.EndsWith(".pdb",StringComparison.OrdinalIgnoreCase)||name.StartsWith("WhatsAppTestRunner",StringComparison.OrdinalIgnoreCase);
+            if(remove)try{File.Delete(file);}catch{}
+        }
+    }
 }
 
 public static class BrowserFinder
