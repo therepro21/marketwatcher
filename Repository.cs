@@ -76,9 +76,25 @@ public sealed class Repository(string database)
     private string? Scalar(string sql){using var db=new SqliteConnection(Cs);db.Open();using var c=db.CreateCommand();c.CommandText=sql;return c.ExecuteScalar() as string;}
     public void BackupNow()
     {
-        Directory.CreateDirectory(AppPaths.BackupDirectory);var temporary=AppPaths.DatabaseBackup+".tmp";if(File.Exists(temporary))File.Delete(temporary);
-        using(var source=new SqliteConnection(Cs)){source.Open();using var destination=new SqliteConnection($"Data Source={temporary}");destination.Open();source.BackupDatabase(destination);}
-        File.Move(temporary,AppPaths.DatabaseBackup,true);
+        // A temporarily locked backup must never prevent the watcher from
+        // starting or saving its primary database.
+        var temporary=Path.Combine(AppPaths.BackupDirectory,$"marktwaechter-{Environment.ProcessId}-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            Directory.CreateDirectory(AppPaths.BackupDirectory);
+            using(var source=new SqliteConnection(Cs)){source.Open();using var destination=new SqliteConnection($"Data Source={temporary};Pooling=False");destination.Open();source.BackupDatabase(destination);}
+            SqliteConnection.ClearAllPools();
+            for(var attempt=0;attempt<5;attempt++)
+            {
+                try{File.Move(temporary,AppPaths.DatabaseBackup,true);return;}
+                catch(IOException)when(attempt<4){Thread.Sleep(100*(attempt+1));}
+            }
+        }
+        catch(Exception ex)
+        {
+            try{File.AppendAllText(Path.Combine(AppPaths.Root,"errors.log"),$"{DateTime.Now:O}\nBackup übersprungen: {ex.Message}\n\n");}catch{}
+        }
+        finally{try{if(File.Exists(temporary))File.Delete(temporary);}catch{}}
     }
     private void Exec(string sql,params (string,object)[] args){using(var db=new SqliteConnection(Cs)){db.Open();using var c=db.CreateCommand();c.CommandText=sql;foreach(var a in args)c.Parameters.AddWithValue(a.Item1,a.Item2);c.ExecuteNonQuery();}BackupNow();}
 }
