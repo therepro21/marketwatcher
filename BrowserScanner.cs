@@ -25,6 +25,9 @@ public sealed class BrowserScanner : IAsyncDisposable
         start.ArgumentList.Add($"--user-data-dir={Path.GetFullPath(AppPaths.EdgeProfile)}");
         start.ArgumentList.Add("--remote-debugging-port=0");
         start.ArgumentList.Add("--remote-debugging-address=127.0.0.1");
+        start.ArgumentList.Add("--disable-features=WakeLock,MediaSessionService");
+        start.ArgumentList.Add("--autoplay-policy=user-gesture-required");
+        start.ArgumentList.Add("--mute-audio");
         start.ArgumentList.Add("--window-position=-32000,-32000");
         start.ArgumentList.Add("--window-size=1440,1000");
         start.ArgumentList.Add("--new-window");start.ArgumentList.Add("about:blank");
@@ -37,6 +40,18 @@ public sealed class BrowserScanner : IAsyncDisposable
         _playwright = await Playwright.CreateAsync();
         _browser=await _playwright.Chromium.ConnectOverCDPAsync($"http://127.0.0.1:{port}");
         _context=_browser.Contexts.FirstOrDefault()??throw new InvalidOperationException("Edge-Browserkontext wurde nicht gefunden.");
+        await _context.AddInitScriptAsync("""
+        (() => {
+          const denied = { request: () => Promise.reject(new DOMException('Wake lock disabled by MarketWatcher', 'NotAllowedError')) };
+          try { Object.defineProperty(Navigator.prototype, 'wakeLock', { configurable: true, get: () => denied }); } catch {}
+          const stopMedia = root => root.querySelectorAll?.('video,audio').forEach(media => { media.muted = true; media.pause(); });
+          document.addEventListener('DOMContentLoaded', () => {
+            stopMedia(document);
+            new MutationObserver(records => records.forEach(record => record.addedNodes.forEach(node => node.nodeType === 1 && stopMedia(node))))
+              .observe(document.documentElement, { childList: true, subtree: true });
+          }, { once: true });
+        })();
+        """);
         await HideEdgeWindowAsync(_edgeProcess);
     }
 
