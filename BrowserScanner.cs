@@ -166,10 +166,12 @@ public sealed class BrowserScanner : IAsyncDisposable
 
     private static async Task SendWhatsAppTextAsync(IPage page,ILocator composer,string message)
     {
-        var verificationText=VerificationText(message);var before=CountOccurrences(Normalize(await page.Locator("body").InnerTextAsync()),verificationText);
+        var verificationText=VerificationText(message);
+        var sentMessages=page.Locator("[data-testid='msg-container'],div.message-out").Filter(new(){HasText=verificationText});
+        var before=await sentMessages.CountAsync();
         await composer.FillAsync(message);var send=page.Locator("button[aria-label='Senden'],button[aria-label='Send']").Last;
         await send.WaitForAsync(new(){State=WaitForSelectorState.Visible,Timeout=10000});await send.ClickAsync(new(){Force=true});
-        for(var attempt=0;attempt<20;attempt++){await page.WaitForTimeoutAsync(500);var bodyText=await page.Locator("body").InnerTextAsync();if(string.IsNullOrEmpty((await composer.InnerTextAsync()).Trim())&&CountOccurrences(Normalize(bodyText),verificationText)>before)return;}
+        for(var attempt=0;attempt<20;attempt++){await page.WaitForTimeoutAsync(500);if(string.IsNullOrEmpty((await composer.InnerTextAsync()).Trim())&&await sentMessages.CountAsync()>before)return;}
         throw new InvalidOperationException("WhatsApp Web hat die Textnachricht nicht bestätigt.");
     }
     private async Task SendWhatsAppImageAsync(IPage page,string imageUrl,string referer,string caption)
@@ -196,7 +198,9 @@ public sealed class BrowserScanner : IAsyncDisposable
         await input.SetInputFilesAsync(new[]{new FilePayload{Name="anzeige"+extension,MimeType=contentType,Buffer=bytes}});
         var send=page.Locator("span[data-icon='wds-ic-send-filled']:visible,[aria-label*='ausgewähltes Element senden']:visible,[aria-label*='selected item' i]:visible").Last;
         await send.WaitForAsync(new(){State=WaitForSelectorState.Visible,Timeout=10000});await send.ClickAsync(new(){Force=true});
-        await composer.WaitForAsync(new(){State=WaitForSelectorState.Visible,Timeout=20000});
+        await page.Locator("button[aria-label='Anhängen'],button[aria-label='Attach']").Last.WaitForAsync(new(){State=WaitForSelectorState.Visible,Timeout=20000});
+        composer=page.Locator("footer [contenteditable='true']").Last;
+        await composer.WaitForAsync(new(){State=WaitForSelectorState.Visible,Timeout=10000});
         var photoConfirmed=false;
         for(var attempt=0;attempt<20;attempt++)
         {
