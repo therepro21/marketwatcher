@@ -168,7 +168,7 @@ public sealed class BrowserScanner : IAsyncDisposable
     {
         var verificationText=VerificationText(message);var before=CountOccurrences(Normalize(await page.Locator("body").InnerTextAsync()),verificationText);
         await composer.FillAsync(message);var send=page.Locator("button[aria-label='Senden'],button[aria-label='Send']").Last;
-        await send.WaitForAsync(new(){State=WaitForSelectorState.Visible,Timeout=10000});await send.ClickAsync();
+        await send.WaitForAsync(new(){State=WaitForSelectorState.Visible,Timeout=10000});await send.ClickAsync(new(){Force=true});
         for(var attempt=0;attempt<20;attempt++){await page.WaitForTimeoutAsync(500);var bodyText=await page.Locator("body").InnerTextAsync();if(string.IsNullOrEmpty((await composer.InnerTextAsync()).Trim())&&CountOccurrences(Normalize(bodyText),verificationText)>before)return;}
         throw new InvalidOperationException("WhatsApp Web hat die Textnachricht nicht bestätigt.");
     }
@@ -186,20 +186,25 @@ public sealed class BrowserScanner : IAsyncDisposable
         finally{await imagePage.CloseAsync();}
         if(bytes.Length==0)throw new InvalidOperationException("Anzeigenfoto war leer.");
         var extension=contentType switch{"image/png"=>".png","image/webp"=>".webp","image/gif"=>".gif",_=>".jpg"};
+        var composer=page.Locator("footer [contenteditable='true']").Last;
+        var mediaBefore=await page.Locator("[data-testid='msg-container'] img,div.message-out img").CountAsync();
+        var attach=page.Locator("button[aria-label='Anhängen'],button[aria-label='Attach'],button[title='Anhängen'],button[title='Attach']").Last;
+        await attach.WaitForAsync(new(){State=WaitForSelectorState.Visible,Timeout=10000});
+        await attach.ClickAsync();
         var input=page.Locator("input[type='file'][accept*='image']").Last;
-        if(await input.CountAsync()==0)
-        {
-            var attach=page.Locator("button[title='Anhängen'],button[title='Attach'],span[data-icon='plus-rounded']").Last;
-            await attach.ClickAsync();input=page.Locator("input[type='file'][accept*='image']").Last;
-        }
         await input.WaitForAsync(new(){State=WaitForSelectorState.Attached,Timeout=10000});
         await input.SetInputFilesAsync(new[]{new FilePayload{Name="anzeige"+extension,MimeType=contentType,Buffer=bytes}});
-        var preview=page.Locator("div[role='dialog'],div[data-animate-modal-popup='true']").Last;
-        await preview.WaitForAsync(new(){State=WaitForSelectorState.Visible,Timeout=15000});
-        var captionBox=preview.Locator("[contenteditable='true']").Last;if(await captionBox.CountAsync()>0)await captionBox.FillAsync(caption);
-        var send=page.Locator("button[aria-label='Senden'],button[aria-label='Send'],span[data-icon='send'],span[data-icon='wds-ic-send-filled'],[aria-label*='ausgewähltes Element senden'],[aria-label*='selected item' i]").Last;
-        await send.WaitForAsync(new(){State=WaitForSelectorState.Visible,Timeout=10000});await send.ClickAsync();
-        await preview.WaitForAsync(new(){State=WaitForSelectorState.Hidden,Timeout=20000});
+        var send=page.Locator("span[data-icon='wds-ic-send-filled']:visible,[aria-label*='ausgewähltes Element senden']:visible,[aria-label*='selected item' i]:visible").Last;
+        await send.WaitForAsync(new(){State=WaitForSelectorState.Visible,Timeout=10000});await send.ClickAsync(new(){Force=true});
+        await composer.WaitForAsync(new(){State=WaitForSelectorState.Visible,Timeout=20000});
+        var photoConfirmed=false;
+        for(var attempt=0;attempt<20;attempt++)
+        {
+            await page.WaitForTimeoutAsync(500);
+            if(await page.Locator("[data-testid='msg-container'] img,div.message-out img").CountAsync()>mediaBefore){photoConfirmed=true;break;}
+        }
+        if(!photoConfirmed)throw new InvalidOperationException("WhatsApp Web hat den Foto-Upload nicht bestätigt.");
+        await SendWhatsAppTextAsync(page,composer,caption);
     }
 
     public Task TestWhatsAppAsync(WhatsAppSettings settings) => SendWhatsAppAsync(
