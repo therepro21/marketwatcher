@@ -40,7 +40,7 @@ public sealed class Repository(string stateFile)
         return new();
     }
     private static DateTime? ParseUtc(string? value)=>DateTime.TryParse(value,System.Globalization.CultureInfo.InvariantCulture,System.Globalization.DateTimeStyles.RoundtripKind,out var parsed)?parsed.ToUniversalTime():null;
-    public List<SearchJob> GetJobs(){lock(_sync)return _state.Jobs.OrderByDescending(x=>x.Id).Select(Clone).ToList();}
+    public List<SearchJob> GetJobs(){lock(_sync)return _state.Jobs.OrderBy(x=>x.Id).Select(Clone).ToList();}
     public SearchJob? GetJob(long id)=>GetJobs().FirstOrDefault(x=>x.Id==id);
     public long AddJob(SearchJob job){lock(_sync){job.Id=_state.NextJobId++;_state.Jobs.Add(Clone(job));SaveLocked();return job.Id;}}
     public void SetEnabled(long id,bool value)=>ChangeJob(id,x=>x.Enabled=value);

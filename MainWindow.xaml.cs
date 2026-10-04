@@ -91,6 +91,11 @@ public partial class MainWindow : Window
         else _browserWarning.UpdateChallenge(challenge.Platform,challenge.SearchName,challenge.Message,challenge.Url);
     });
     private void PlatformLink_Click(object sender,System.Windows.Navigation.RequestNavigateEventArgs e){Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri){UseShellExecute=true});e.Handled=true;}
-    private void AddLog(string text)=>Dispatcher.Invoke(()=>{Logs.Insert(0,$"{DateTime.Now:HH:mm:ss}  {text}");while(Logs.Count>200)Logs.RemoveAt(Logs.Count-1);});
+    private void AddLog(string text)=>Dispatcher.Invoke(()=>
+    {
+        Logs.Add($"{DateTime.Now:HH:mm:ss}  {text}");
+        while(Logs.Count>200)Logs.RemoveAt(0);
+        if(Logs.Count>0)LogList.ScrollIntoView(Logs[^1]);
+    });
     private void RefreshJobs()=>Dispatcher.Invoke(()=>{Searches.Clear();foreach(var x in _repo.GetJobs())Searches.Add(x);});
 }
