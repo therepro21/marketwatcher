@@ -65,6 +65,9 @@ public sealed class Repository(string stateFile)
     public void SaveWhatsApp(WhatsAppSettings value){lock(_sync){_state.WhatsApp=RoundTrip(value);SaveLocked();}}
     public GeneralSettings GetGeneral(){lock(_sync)return RoundTrip(_state.General);}
     public void SaveGeneral(GeneralSettings value){lock(_sync){_state.General=RoundTrip(value);SaveLocked();}}
+    public RuntimeStatistics GetStatistics(){lock(_sync)return RoundTrip(_state.Statistics);}
+    public void RecordSuccessfulNotifications(int count){if(count<=0)return;lock(_sync){_state.Statistics.SuccessfulNotifications+=count;SaveLocked();}}
+    public void RecordErrors(int count=1){if(count<=0)return;lock(_sync){_state.Statistics.Errors+=count;SaveLocked();}}
     public void BackupNow(){lock(_sync)SaveLocked();}
     private void SaveLocked(bool backup=true)
     {
@@ -87,6 +90,7 @@ public sealed class PortableState
     public TelegramSettings Telegram { get; set; }=new();
     public WhatsAppSettings WhatsApp { get; set; }=new();
     public GeneralSettings General { get; set; }=new();
+    public RuntimeStatistics Statistics { get; set; }=new();
 }
 public sealed class PortableSeenItem
 {

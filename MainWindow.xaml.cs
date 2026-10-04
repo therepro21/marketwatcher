@@ -62,6 +62,17 @@ public partial class MainWindow : Window
     private async void CardRun_Click(object sender,RoutedEventArgs e){SelectCard(sender);if(SearchGrid.SelectedItem is SearchJob j)await _watcher.RunJobAsync(j.Id,false);}
     private void CardToggle_Click(object sender,RoutedEventArgs e){SelectCard(sender);Toggle_Click(sender,e);}
     private void CardRecipients_Click(object sender,RoutedEventArgs e){SelectCard(sender);AssignRecipients_Click(sender,e);}
+    private void CardMore_Click(object sender,RoutedEventArgs e)
+    {
+        SelectCard(sender);if(SearchGrid.SelectedItem is not SearchJob job||sender is not FrameworkElement button)return;
+        var menu=new System.Windows.Controls.ContextMenu{Background=new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(24,36,50)),Foreground=System.Windows.Media.Brushes.White};
+        var open=new System.Windows.Controls.MenuItem{Header="Anzeigeportal / Such-URL öffnen"};open.Click+=(_,_)=>Process.Start(new ProcessStartInfo(job.Url){UseShellExecute=true});menu.Items.Add(open);
+        var run=new System.Windows.Controls.MenuItem{Header="Jetzt prüfen"};run.Click+=(_,_)=>RunNow_Click(button,new RoutedEventArgs());menu.Items.Add(run);
+        var toggle=new System.Windows.Controls.MenuItem{Header=job.Enabled?"Suche pausieren":"Suche fortsetzen"};toggle.Click+=(_,_)=>Toggle_Click(button,new RoutedEventArgs());menu.Items.Add(toggle);
+        var recipients=new System.Windows.Controls.MenuItem{Header="Empfänger zuordnen"};recipients.Click+=(_,_)=>AssignRecipients_Click(button,new RoutedEventArgs());menu.Items.Add(recipients);
+        menu.Items.Add(new System.Windows.Controls.Separator());var delete=new System.Windows.Controls.MenuItem{Header="Suche löschen",Foreground=new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255,135,151))};delete.Click+=(_,_)=>Delete_Click(button,new RoutedEventArgs());menu.Items.Add(delete);
+        button.ContextMenu=menu;menu.IsOpen=true;
+    }
     private void SelectCard(object sender){if(sender is FrameworkElement {DataContext:SearchJob job})SearchGrid.SelectedItem=job;}
     private async void Toggle_Click(object sender,RoutedEventArgs e)
     {
@@ -118,6 +129,8 @@ public partial class MainWindow : Window
     {
         if(!IsInitialized)return;var jobs=_repo.GetJobs();var active=jobs.Where(x=>x.Enabled).ToList();ActiveSearchText.Text=$"{active.Count} von {jobs.Count}";
         BrowserModeText.Text=_repo.GetGeneral().KeepBrowserOpen?active.Count>0?"Edge bleibt unsichtbar geöffnet":"Edge geschlossen · keine aktive Suche":"Edge wird nach jedem Lauf geschlossen";
+        var last=jobs.Where(x=>x.LastRunUtc.HasValue).OrderByDescending(x=>x.LastRunUtc).FirstOrDefault();SystemLastRunText.Text=last is null?"Noch keine Prüfung":$"{last.LastRunLabel} · {last.Platform}";
+        SystemOffersText.Text=$"{jobs.Sum(x=>x.SeenCount)} gespeicherte Treffer";var statistics=_repo.GetStatistics();SystemNotificationsText.Text=$"{statistics.SuccessfulNotifications} Treffer";SystemErrorsText.Text=statistics.Errors.ToString();SystemErrorsText.Foreground=statistics.Errors==0?new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(102,233,157)):new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255,135,151));
         if(active.Count==0){NextCheckText.Text="Keine aktive Suche";return;}
         var wait=active.Select(x=>x.LastRunUtc is null?TimeSpan.Zero:TimeSpan.FromSeconds(x.IntervalSeconds)-(DateTime.UtcNow-x.LastRunUtc.Value)).Min();if(wait<TimeSpan.Zero)wait=TimeSpan.Zero;
         NextCheckText.Text=wait.TotalSeconds<1?"jetzt":wait.TotalMinutes>=1?$"in {(int)wait.TotalMinutes} Min. {wait.Seconds} Sek.":$"in {Math.Max(1,(int)Math.Ceiling(wait.TotalSeconds))} Sek.";

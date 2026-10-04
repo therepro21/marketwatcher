@@ -1,3 +1,5 @@
+using System.IO;
+
 namespace MarketWatcher;
 
 public sealed class GeneralSettings
@@ -28,6 +30,20 @@ public sealed class SearchJob
     public string MatchModeLabel => MatchMode == "title_or_content" ? "Titel oder Inhalt" : "Nur Titel";
     public string RecipientsLabel => RecipientIds.Split(',',StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries).Length switch {0=>"Keine",1=>"1 Person",var n=>$"{n} Personen"};
     public string LastRunLabel => LastRunUtc?.ToLocalTime().ToString("dd.MM. HH:mm:ss") ?? "–";
+    public string PortalLogoPath
+    {
+        get
+        {
+            var file=Platform.ToLowerInvariant() switch{"willhaben"=>"willhaben.png","kleinanzeigen"=>"kleinanzeigen.png","vinted"=>"Vinted.png","markt.de"=>"markt.de.png","quoka"=>"Quoka.png","tutti"=>"Tutti.png",var x when x.StartsWith("ebay")=>"eBay.png",_=>""};
+            return string.IsNullOrEmpty(file)?"":Path.Combine(AppContext.BaseDirectory,"Assets","Portals",file);
+        }
+    }
+}
+
+public sealed class RuntimeStatistics
+{
+    public long SuccessfulNotifications { get; set; }
+    public long Errors { get; set; }
 }
 
 public sealed record Listing(string ExternalId, string Title, string Url, string Price, string ImageUrl = "", string PostalCode = "", string Location = "", string SearchText = "");

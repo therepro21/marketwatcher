@@ -17,6 +17,7 @@
   <ItemGroup>
     <Content Include="Assets\marketwatcher.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\marketwatcher.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\Portals\*.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

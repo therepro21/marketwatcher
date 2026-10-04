@@ -48,12 +48,13 @@ public sealed class WatcherService : IAsyncDisposable
             else
             {
                 var errors=await SendNotificationsAsync(job,fresh);
+                if(errors.Count==0)_repo.RecordSuccessfulNotifications(fresh.Count);else _repo.RecordErrors(errors.Count);
                 _repo.SetLastNewResult(job.Id,DateTime.UtcNow);var status=$"PORTAL: {job.Platform} · SUCHBEGRIFF: {job.Name} · {fresh.Count} neue Ergebnisse"+(errors.Count==0?" und gemeldet":$" · {errors.Count} Meldefehler");_repo.UpdateRun(job.Id,true,status);
                 _log($"SUCHE #{job.Id} · {status}"+(errors.Count==0?"":$" · {string.Join(" | ",errors)}"));
             }
         }
-        catch(BrowserChallengeException ex){var failed=_repo.GetJob(id);_repo.UpdateRun(id,true,$"PORTAL: {failed?.Platform??ex.Platform} · SUCHBEGRIFF: {failed?.Name??ex.SearchName} · Pausiert: {ex.Message}");_repo.SetEnabled(id,false);_log($"SUCHE #{id} · PORTAL: {ex.Platform} · SUCHBEGRIFF: {ex.SearchName} · {ex.Message}");ManualInterventionRequired?.Invoke(ex);}
-        catch(Exception ex){var failed=_repo.GetJob(id);_repo.UpdateRun(id,failed?.Initialized??false,$"PORTAL: {failed?.Platform??"Unbekannt"} · SUCHBEGRIFF: {failed?.Name??"Unbekannt"} · Fehler: {ex.Message}");_log($"SUCHE #{id} · PORTAL: {failed?.Platform??"Unbekannt"} · SUCHBEGRIFF: {failed?.Name??"Unbekannt"} · FEHLER: {ex.Message}");}
+        catch(BrowserChallengeException ex){_repo.RecordErrors();var failed=_repo.GetJob(id);_repo.UpdateRun(id,true,$"PORTAL: {failed?.Platform??ex.Platform} · SUCHBEGRIFF: {failed?.Name??ex.SearchName} · Pausiert: {ex.Message}");_repo.SetEnabled(id,false);_log($"SUCHE #{id} · PORTAL: {ex.Platform} · SUCHBEGRIFF: {ex.SearchName} · {ex.Message}");ManualInterventionRequired?.Invoke(ex);}
+        catch(Exception ex){_repo.RecordErrors();var failed=_repo.GetJob(id);_repo.UpdateRun(id,failed?.Initialized??false,$"PORTAL: {failed?.Platform??"Unbekannt"} · SUCHBEGRIFF: {failed?.Name??"Unbekannt"} · Fehler: {ex.Message}");_log($"SUCHE #{id} · PORTAL: {failed?.Platform??"Unbekannt"} · SUCHBEGRIFF: {failed?.Name??"Unbekannt"} · FEHLER: {ex.Message}");}
         finally
         {
             var keepBrowser=_repo.GetGeneral().KeepBrowserOpen&&_repo.GetJobs().Any(x=>x.Enabled);
