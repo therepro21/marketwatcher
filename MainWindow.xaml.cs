@@ -11,11 +11,13 @@ namespace MarketWatcher;
 public partial class MainWindow : Window
 {
     private readonly Repository _repo; private readonly WatcherService _watcher; private readonly Forms.NotifyIcon _trayIcon; private bool _shutdownComplete; private bool _exitRequested;private BrowserWarningWindow? _browserWarning;
+    private readonly System.Windows.Threading.DispatcherTimer _statusTimer;private bool _sidebarCollapsed;
     public ObservableCollection<SearchJob> Searches { get; }=[]; public ObservableCollection<string> Logs { get; }=[];
     public MainWindow()
     {
         InitializeComponent();DataContext=this;_repo=new Repository(AppPaths.StateFile);_repo.Initialize();RefreshJobs();
         _watcher=new WatcherService(_repo,AddLog,RefreshJobs);_watcher.ManualInterventionRequired+=ShowBrowserWarning;AutoStartBox.IsChecked=AutoStartManager.IsEnabled();
+        _statusTimer=new(){Interval=TimeSpan.FromSeconds(1)};_statusTimer.Tick+=(_,_)=>UpdateDashboard();_statusTimer.Start();UpdateDashboard();
         var iconPath=Path.Combine(AppContext.BaseDirectory,"Assets","marketwatcher.ico");
         _trayIcon=new Forms.NotifyIcon{Icon=File.Exists(iconPath)?new Drawing.Icon(iconPath):Drawing.SystemIcons.Application,Text="MarketWatcher läuft – Suchagent aktiv",Visible=true};
         var menu=new Forms.ContextMenuStrip();
@@ -43,7 +45,7 @@ public partial class MainWindow : Window
         if(_shutdownComplete){base.OnClosing(e);return;}
         e.Cancel=true;AgentStatus.Text="● Agent wird beendet";
         try{await _watcher.DisposeAsync();}catch(Exception ex){AddLog("Fehler beim Beenden: "+ex.Message);}
-        _shutdownComplete=true;_trayIcon.Visible=false;_trayIcon.Dispose();Close();
+        _statusTimer.Stop();_shutdownComplete=true;_trayIcon.Visible=false;_trayIcon.Dispose();Close();
     }
     private void RestoreFromTray(){Show();WindowState=WindowState.Normal;Activate();}
     private async void AddSearch_Click(object sender,RoutedEventArgs e)
@@ -57,6 +59,10 @@ public partial class MainWindow : Window
         job.Id=_repo.AddJob(job);_watcher.NotifyScheduleChanged();RefreshJobs();UrlBox.Clear();NameBox.Clear();AddLog($"Suche hinzugefügt: {job.Name}");await _watcher.RunJobAsync(job.Id,true);
     }
     private async void RunNow_Click(object sender,RoutedEventArgs e){if(SearchGrid.SelectedItem is SearchJob j)await _watcher.RunJobAsync(j.Id,false);}
+    private async void CardRun_Click(object sender,RoutedEventArgs e){SelectCard(sender);if(SearchGrid.SelectedItem is SearchJob j)await _watcher.RunJobAsync(j.Id,false);}
+    private void CardToggle_Click(object sender,RoutedEventArgs e){SelectCard(sender);Toggle_Click(sender,e);}
+    private void CardRecipients_Click(object sender,RoutedEventArgs e){SelectCard(sender);AssignRecipients_Click(sender,e);}
+    private void SelectCard(object sender){if(sender is FrameworkElement {DataContext:SearchJob job})SearchGrid.SelectedItem=job;}
     private async void Toggle_Click(object sender,RoutedEventArgs e)
     {
         if(SearchGrid.SelectedItem is not SearchJob job){MessageBox.Show("Bitte zuerst eine Suche auswählen.");return;}
@@ -68,6 +74,16 @@ public partial class MainWindow : Window
     }
     private void Delete_Click(object sender,RoutedEventArgs e){if(SearchGrid.SelectedItem is not SearchJob j)return;if(MessageBox.Show($"Suche „{j.Name}“ löschen? Die globale Ausschlussdatenbank bleibt erhalten.","Löschen",MessageBoxButton.YesNo)==MessageBoxResult.Yes){_repo.DeleteJob(j.Id);_watcher.NotifyScheduleChanged();RefreshJobs();}}
     private void Email_Click(object sender,RoutedEventArgs e){new EmailSettingsWindow(_repo,_watcher){Owner=this}.ShowDialog();AutoStartBox.IsChecked=AutoStartManager.IsEnabled();}
+    private void Overview_Click(object sender,RoutedEventArgs e){NewSearchPanel.Visibility=Visibility.Collapsed;}
+    private void Searches_Click(object sender,RoutedEventArgs e){NewSearchPanel.Visibility=Visibility.Visible;UrlBox.Focus();}
+    private void ShowNewSearch_Click(object sender,RoutedEventArgs e){NewSearchPanel.Visibility=NewSearchPanel.Visibility==Visibility.Visible?Visibility.Collapsed:Visibility.Visible;if(NewSearchPanel.Visibility==Visibility.Visible)UrlBox.Focus();}
+    private void Recipients_Click(object sender,RoutedEventArgs e){if(SearchGrid.SelectedItem is SearchJob)AssignRecipients_Click(sender,e);else Email_Click(sender,e);}
+    private void CollapseSidebar_Click(object sender,RoutedEventArgs e)
+    {
+        _sidebarCollapsed=!_sidebarCollapsed;SidebarColumn.Width=new GridLength(_sidebarCollapsed?70:230);CollapseButton.Content=_sidebarCollapsed?"›":"‹";
+        BrandPanel.Visibility=OverviewNavText.Visibility=SearchesNavText.Visibility=RecipientsNavText.Visibility=SettingsNavText.Visibility=SidebarAgentText.Visibility=SidebarVersionText.Visibility=CopyrightText.Visibility=GithubText.Visibility=_sidebarCollapsed?Visibility.Collapsed:Visibility.Visible;
+        CollapseButton.ToolTip=_sidebarCollapsed?"Navigation ausklappen":"Navigation einklappen";
+    }
     private void AssignRecipients_Click(object sender,RoutedEventArgs e)
     {
         if(SearchGrid.SelectedItem is not SearchJob job){MessageBox.Show("Bitte zuerst eine Suche auswählen.");return;}
@@ -97,5 +113,13 @@ public partial class MainWindow : Window
         while(Logs.Count>200)Logs.RemoveAt(0);
         if(Logs.Count>0)LogList.ScrollIntoView(Logs[^1]);
     });
-    private void RefreshJobs()=>Dispatcher.Invoke(()=>{Searches.Clear();foreach(var x in _repo.GetJobs())Searches.Add(x);});
+    private void RefreshJobs()=>Dispatcher.Invoke(()=>{Searches.Clear();foreach(var x in _repo.GetJobs())Searches.Add(x);UpdateDashboard();});
+    private void UpdateDashboard()
+    {
+        if(!IsInitialized)return;var jobs=_repo.GetJobs();var active=jobs.Where(x=>x.Enabled).ToList();ActiveSearchText.Text=$"{active.Count} von {jobs.Count}";
+        BrowserModeText.Text=_repo.GetGeneral().KeepBrowserOpen?active.Count>0?"Edge bleibt unsichtbar geöffnet":"Edge geschlossen · keine aktive Suche":"Edge wird nach jedem Lauf geschlossen";
+        if(active.Count==0){NextCheckText.Text="Keine aktive Suche";return;}
+        var wait=active.Select(x=>x.LastRunUtc is null?TimeSpan.Zero:TimeSpan.FromSeconds(x.IntervalSeconds)-(DateTime.UtcNow-x.LastRunUtc.Value)).Min();if(wait<TimeSpan.Zero)wait=TimeSpan.Zero;
+        NextCheckText.Text=wait.TotalSeconds<1?"jetzt":wait.TotalMinutes>=1?$"in {(int)wait.TotalMinutes} Min. {wait.Seconds} Sek.":$"in {Math.Max(1,(int)Math.Ceiling(wait.TotalSeconds))} Sek.";
+    }
 }
