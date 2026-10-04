@@ -38,6 +38,11 @@ public static class TelegramSender
 
 public static class NotificationText
 {
+    public static string BuildItem(SearchJob job,Listing item)
+    {
+        var details=new[]{item.Price,item.PostalCode,item.Location,job.Platform}.Where(x=>!string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase);
+        return $"🆕 {item.Title}\n{string.Join(" · ",details)}\n{item.Url}";
+    }
     public static IEnumerable<string> BuildChunks(SearchJob job, IReadOnlyList<Listing> items, int maxLength,bool includeImages=false)
     {
         var header=$"🆕 {items.Count} neue Treffer – {job.Name}\n"; var current=new StringBuilder(header);

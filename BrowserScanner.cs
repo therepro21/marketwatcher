@@ -91,7 +91,7 @@ public sealed class BrowserScanner : IAsyncDisposable
 
             var raw = await page.Locator("a[href]").EvaluateAllAsync<RawLink[]>("""
         els => els.map(a => {
-          const card = a.closest('[data-testid="grid-item"]') || a.closest('article, li, [data-testid*=item], [class*=item], [class*=ad]') || a;
+          const card = a.closest('[data-testid="grid-item"]') || a.closest('.clsy-c-result-list-item,[data-articleid],article,li,[data-testid*="search-result"]') || a.parentElement || a;
           const text = (card.innerText || a.innerText || '').replace(/\s+/g,' ').trim();
           const titleEl = card.querySelector?.('[data-testid$="--description-title"],h2,h3,[data-testid*=title],[class*=title]');
           const title = (titleEl?.innerText || a.innerText || text).replace(/\s+/g,' ').trim();
@@ -100,7 +100,12 @@ public sealed class BrowserScanner : IAsyncDisposable
           const location = (locationEl?.innerText || '').replace(/\s+/g,' ').trim();
           const postal = ((location || text).match(/\b(?:[1-9]\d{3}|\d{5})\b/)||[''])[0];
           const img = card.querySelector?.('img');
-          const image = img?.currentSrc || img?.src || img?.getAttribute('data-src') || (img?.getAttribute('srcset')||'').split(/[ ,]/)[0] || '';
+          const source = card.querySelector?.('picture source[srcset],source[data-srcset]');
+          const candidates = [img?.currentSrc,img?.src,img?.getAttribute('data-src'),img?.getAttribute('data-original'),img?.getAttribute('data-lazy-src'),
+            ...(img?.getAttribute('srcset')||'').split(',').map(x=>x.trim().split(/\s+/)[0]),
+            ...(img?.getAttribute('data-srcset')||'').split(',').map(x=>x.trim().split(/\s+/)[0]),
+            ...(source?.getAttribute('srcset')||source?.getAttribute('data-srcset')||'').split(',').map(x=>x.trim().split(/\s+/)[0])].filter(Boolean);
+          const image = candidates.find(x=>/^https?:\/\//i.test(x)) || candidates.find(x=>x.startsWith('//')) || '';
           return { href:a.href, text:title, fullText:text, price, image, postal, location, dataTestId:a.getAttribute('data-testid')||'', externalId:card.getAttribute?.('data-articleid')||'' };
         }).filter(x => x.href && x.text.length > 4)
         """);
@@ -133,29 +138,23 @@ public sealed class BrowserScanner : IAsyncDisposable
             {
                 try
                 {
-                    foreach (var message in NotificationText.BuildChunks(job, items, 3000,settings.IncludeImages))
+                    var target = $"https://web.whatsapp.com/send?phone={recipient.Phone}";
+                    await page.GotoAsync(target, new PageGotoOptions { WaitUntil=WaitUntilState.DOMContentLoaded, Timeout=45000 });
+                    var composer = page.Locator("footer [contenteditable='true']").Last;
+                    try { await composer.WaitForAsync(new LocatorWaitForOptions { State=WaitForSelectorState.Visible, Timeout=30000 }); }
+                    catch { throw new BrowserChallengeException("WhatsApp Web","Nachrichtenversand / Anmeldung","https://web.whatsapp.com","WhatsApp Web ist nicht angemeldet oder benötigt eine Bestätigung."); }
+                    if(settings.IncludeImages)
                     {
-                        var target = $"https://web.whatsapp.com/send?phone={recipient.Phone}";
-                        await page.GotoAsync(target, new PageGotoOptions { WaitUntil=WaitUntilState.DOMContentLoaded, Timeout=45000 });
-                        var composer = page.Locator("footer [contenteditable='true']").Last;
-                        try { await composer.WaitForAsync(new LocatorWaitForOptions { State=WaitForSelectorState.Visible, Timeout=30000 }); }
-                        catch { throw new BrowserChallengeException("WhatsApp Web","Nachrichtenversand / Anmeldung","https://web.whatsapp.com","WhatsApp Web ist nicht angemeldet oder benötigt eine Bestätigung."); }
-                        var verificationText=VerificationText(message);
-                        var before=CountOccurrences(Normalize(await page.Locator("body").InnerTextAsync()),verificationText);
-                        await composer.FillAsync(message);
-                        var send=page.Locator("button[aria-label='Senden'], button[aria-label='Send']").Last;
-                        await send.WaitForAsync(new LocatorWaitForOptions{State=WaitForSelectorState.Visible,Timeout=10000});
-                        await send.ClickAsync();
-                        var confirmed=false;
-                        for(var attempt=0;attempt<20&&!confirmed;attempt++)
+                        foreach(var item in items)
                         {
-                            await page.WaitForTimeoutAsync(500);
-                            var bodyText=await page.Locator("body").InnerTextAsync();
-                            var draft=(await composer.InnerTextAsync()).Trim();
-                            if(attempt==3&&!string.IsNullOrEmpty(draft))await composer.PressAsync("Enter");
-                            confirmed=string.IsNullOrEmpty(draft)&&CountOccurrences(Normalize(bodyText),verificationText)>before;
+                            var caption=NotificationText.BuildItem(job,item);
+                            if(string.IsNullOrWhiteSpace(item.ImageUrl)){await SendWhatsAppTextAsync(page,composer,caption);continue;}
+                            await SendWhatsAppImageAsync(page,item.ImageUrl,item.Url,caption);
                         }
-                        if(!confirmed)throw new InvalidOperationException("WhatsApp Web hat die gesendete Nachricht nicht im Chat bestätigt.");
+                    }
+                    else foreach (var message in NotificationText.BuildChunks(job, items, 3000,false))
+                    {
+                        await SendWhatsAppTextAsync(page,composer,message);
                     }
                 }
                 catch(Exception ex){deliveryErrors.Add($"{recipient.Name} ({recipient.Phone}): {ex.Message}");}
@@ -163,6 +162,44 @@ public sealed class BrowserScanner : IAsyncDisposable
             if(deliveryErrors.Count>0)throw new InvalidOperationException(string.Join(" | ",deliveryErrors));
         }
         finally { await page.CloseAsync(); }
+    }
+
+    private static async Task SendWhatsAppTextAsync(IPage page,ILocator composer,string message)
+    {
+        var verificationText=VerificationText(message);var before=CountOccurrences(Normalize(await page.Locator("body").InnerTextAsync()),verificationText);
+        await composer.FillAsync(message);var send=page.Locator("button[aria-label='Senden'],button[aria-label='Send']").Last;
+        await send.WaitForAsync(new(){State=WaitForSelectorState.Visible,Timeout=10000});await send.ClickAsync();
+        for(var attempt=0;attempt<20;attempt++){await page.WaitForTimeoutAsync(500);var bodyText=await page.Locator("body").InnerTextAsync();if(string.IsNullOrEmpty((await composer.InnerTextAsync()).Trim())&&CountOccurrences(Normalize(bodyText),verificationText)>before)return;}
+        throw new InvalidOperationException("WhatsApp Web hat die Textnachricht nicht bestätigt.");
+    }
+    private async Task SendWhatsAppImageAsync(IPage page,string imageUrl,string referer,string caption)
+    {
+        if(imageUrl.StartsWith("//"))imageUrl="https:"+imageUrl;
+        var imagePage=await _context!.NewPageAsync();byte[] bytes;string contentType;
+        try
+        {
+            await imagePage.SetExtraHTTPHeadersAsync(new Dictionary<string,string>{{"Referer",referer}});
+            var response=await imagePage.GotoAsync(imageUrl,new(){WaitUntil=WaitUntilState.Commit,Timeout=30000});
+            if(response is null||!response.Ok)throw new InvalidOperationException($"Anzeigenfoto konnte nicht geladen werden (HTTP {response?.Status}).");
+            bytes=await response.BodyAsync();contentType=response.Headers.TryGetValue("content-type",out var type)?type.Split(';')[0]:"image/jpeg";
+        }
+        finally{await imagePage.CloseAsync();}
+        if(bytes.Length==0)throw new InvalidOperationException("Anzeigenfoto war leer.");
+        var extension=contentType switch{"image/png"=>".png","image/webp"=>".webp","image/gif"=>".gif",_=>".jpg"};
+        var input=page.Locator("input[type='file'][accept*='image']").Last;
+        if(await input.CountAsync()==0)
+        {
+            var attach=page.Locator("button[title='Anhängen'],button[title='Attach'],span[data-icon='plus-rounded']").Last;
+            await attach.ClickAsync();input=page.Locator("input[type='file'][accept*='image']").Last;
+        }
+        await input.WaitForAsync(new(){State=WaitForSelectorState.Attached,Timeout=10000});
+        await input.SetInputFilesAsync(new[]{new FilePayload{Name="anzeige"+extension,MimeType=contentType,Buffer=bytes}});
+        var preview=page.Locator("div[role='dialog'],div[data-animate-modal-popup='true']").Last;
+        await preview.WaitForAsync(new(){State=WaitForSelectorState.Visible,Timeout=15000});
+        var captionBox=preview.Locator("[contenteditable='true']").Last;if(await captionBox.CountAsync()>0)await captionBox.FillAsync(caption);
+        var send=page.Locator("button[aria-label='Senden'],button[aria-label='Send'],span[data-icon='send'],span[data-icon='wds-ic-send-filled'],[aria-label*='ausgewähltes Element senden'],[aria-label*='selected item' i]").Last;
+        await send.WaitForAsync(new(){State=WaitForSelectorState.Visible,Timeout=10000});await send.ClickAsync();
+        await preview.WaitForAsync(new(){State=WaitForSelectorState.Hidden,Timeout=20000});
     }
 
     public Task TestWhatsAppAsync(WhatsAppSettings settings) => SendWhatsAppAsync(
