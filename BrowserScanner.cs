@@ -13,6 +13,7 @@ public sealed class BrowserScanner : IAsyncDisposable
     private IBrowser? _browser;
     private IBrowserContext? _context;
     private Process? _edgeProcess;
+    public bool IsRunning => _context is not null && _edgeProcess is not null && !_edgeProcess.HasExited;
 
     public async Task StartAsync(bool headless = true)
     {

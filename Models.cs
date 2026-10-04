@@ -1,5 +1,10 @@
 namespace MarketWatcher;
 
+public sealed class GeneralSettings
+{
+    public bool KeepBrowserOpen { get; set; } = true;
+}
+
 public sealed class SearchJob
 {
     public long Id { get; set; }

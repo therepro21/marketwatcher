@@ -21,6 +21,7 @@ public sealed class WatcherService : IAsyncDisposable
             var enabled=_repo.GetJobs().Where(x=>x.Enabled).ToList();
             if(enabled.Count==0)
             {
+                if(_scanner.IsRunning)try{await _scanner.CloseAsync();_log("Keine aktive Suche · Edge vollständig geschlossen.");}catch(Exception ex){_log("Browser konnte nicht vollständig geschlossen werden: "+ex.Message);}
                 try{await _wake.WaitAsync(_stop.Token);}catch(OperationCanceledException){break;}
                 continue;
             }
@@ -35,6 +36,7 @@ public sealed class WatcherService : IAsyncDisposable
     public async Task RunJobAsync(long id,bool added)
     {
         if(!await _gate.WaitAsync(0)){_log("Ein Suchlauf ist bereits aktiv.");return;}
+        var elapsed=System.Diagnostics.Stopwatch.StartNew();var reusedBrowser=_scanner.IsRunning;
         try
         {
             var job=_repo.GetJob(id); if(job is null)return; _log($"SUCHE #{job.Id} · PORTAL: {job.Platform} · SUCHBEGRIFF: {job.Name} · Prüfung läuft …");
@@ -54,7 +56,9 @@ public sealed class WatcherService : IAsyncDisposable
         catch(Exception ex){var failed=_repo.GetJob(id);_repo.UpdateRun(id,failed?.Initialized??false,$"PORTAL: {failed?.Platform??"Unbekannt"} · SUCHBEGRIFF: {failed?.Name??"Unbekannt"} · Fehler: {ex.Message}");_log($"SUCHE #{id} · PORTAL: {failed?.Platform??"Unbekannt"} · SUCHBEGRIFF: {failed?.Name??"Unbekannt"} · FEHLER: {ex.Message}");}
         finally
         {
-            try{await _scanner.CloseAsync();}catch(Exception ex){_log("Browser konnte nicht vollständig geschlossen werden: "+ex.Message);}
+            var keepBrowser=_repo.GetGeneral().KeepBrowserOpen&&_repo.GetJobs().Any(x=>x.Enabled);
+            if(!keepBrowser)try{await _scanner.CloseAsync();}catch(Exception ex){_log("Browser konnte nicht vollständig geschlossen werden: "+ex.Message);}
+            elapsed.Stop();_log($"SUCHE #{id} · Laufzeit {elapsed.Elapsed.TotalSeconds:0.0} Sek. · Edge {(reusedBrowser?keepBrowser?"wiederverwendet und bleibt geöffnet":"wiederverwendet und geschlossen":keepBrowser?"gestartet und bleibt unsichtbar geöffnet":"neu gestartet und geschlossen")}");
             _gate.Release();_refresh();
         }
     }
@@ -79,7 +83,14 @@ public sealed class WatcherService : IAsyncDisposable
             _repo.SetEnabled(job.Id,true);NotifyScheduleChanged();_log($"{job.Name}: fortgesetzt; Meldungen gelten ab jetzt.");
         }
         catch(Exception ex){_repo.SetEnabled(id,false);_log("Fortsetzen fehlgeschlagen: "+ex.Message);}
-        finally{try{await _scanner.CloseAsync();}catch{} _gate.Release();_refresh();}
+        finally{if(!_repo.GetGeneral().KeepBrowserOpen)try{await _scanner.CloseAsync();}catch{} _gate.Release();_refresh();}
+    }
+    public async Task ApplyBrowserPolicyAsync()
+    {
+        if(_repo.GetGeneral().KeepBrowserOpen)return;
+        if(!await _gate.WaitAsync(0)){_log("Browsermodus geändert: Edge wird nach dem laufenden Suchlauf beendet.");return;}
+        try{await _scanner.CloseAsync();_log("Browsermodus geändert: Edge wird zwischen Prüfungen vollständig beendet.");}
+        finally{_gate.Release();}
     }
     public async Task OpenProfileAsync(string? url=null)
     {
