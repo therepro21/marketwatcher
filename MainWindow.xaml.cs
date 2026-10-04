@@ -97,12 +97,26 @@ public partial class MainWindow : Window
     {
         _sidebarCollapsed=!_sidebarCollapsed;SidebarColumn.Width=new GridLength(_sidebarCollapsed?80:250);CollapseButton.Content=_sidebarCollapsed?"›":"‹";
         HeaderLogo.Visibility=_sidebarCollapsed?Visibility.Visible:Visibility.Collapsed;
+        SidebarHeader.Margin=_sidebarCollapsed?new Thickness(0,18,0,24):new Thickness(14,18,10,24);
+        System.Windows.Controls.Grid.SetColumn(CollapseButton,_sidebarCollapsed?0:1);
+        System.Windows.Controls.Grid.SetColumnSpan(CollapseButton,_sidebarCollapsed?2:1);
+        CollapseButton.HorizontalAlignment=System.Windows.HorizontalAlignment.Center;
+        SidebarStatusContent.HorizontalAlignment=System.Windows.HorizontalAlignment.Center;
+        SidebarStatusDot.Margin=_sidebarCollapsed?new Thickness(0):new Thickness(0,0,9,0);
+        SidebarStatusBadge.Padding=_sidebarCollapsed?new Thickness(0):new Thickness(11);
+        SidebarStatusBadge.Width=_sidebarCollapsed?40:double.NaN;
+        SidebarStatusBadge.Height=_sidebarCollapsed?40:double.NaN;
+        SidebarStatusBadge.HorizontalAlignment=System.Windows.HorizontalAlignment.Center;
         foreach(var label in new[]{OverviewNavText,SearchesNavText,RecipientsNavText,SettingsNavText})
         {
             var panel=(System.Windows.Controls.StackPanel)label.Parent;var nav=(System.Windows.Controls.Button)panel.Parent;
             nav.Padding=_sidebarCollapsed?new Thickness(10,14,10,14):new Thickness(17,14,17,14);
             nav.HorizontalContentAlignment=_sidebarCollapsed?System.Windows.HorizontalAlignment.Center:System.Windows.HorizontalAlignment.Left;
-            ((System.Windows.Controls.TextBlock)panel.Children[0]).Width=_sidebarCollapsed?28:38;
+            var icon=(System.Windows.Controls.TextBlock)panel.Children[0];
+            icon.Width=_sidebarCollapsed?28:38;icon.TextAlignment=TextAlignment.Center;
+            icon.FontFamily=new System.Windows.Media.FontFamily("Segoe Fluent Icons");
+            icon.FontSize=22;icon.Height=28;icon.VerticalAlignment=System.Windows.VerticalAlignment.Center;
+            icon.Text=label==OverviewNavText?"\uE80F":label==SearchesNavText?"\uE721":label==RecipientsNavText?"\uE716":"\uE713";
         }
         BrandPanel.Visibility=OverviewNavText.Visibility=SearchesNavText.Visibility=RecipientsNavText.Visibility=SettingsNavText.Visibility=SidebarAgentText.Visibility=SidebarVersionText.Visibility=CopyrightText.Visibility=GithubText.Visibility=_sidebarCollapsed?Visibility.Collapsed:Visibility.Visible;
         CollapseButton.ToolTip=_sidebarCollapsed?"Navigation ausklappen":"Navigation einklappen";
