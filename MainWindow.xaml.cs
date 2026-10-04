@@ -15,7 +15,11 @@ public partial class MainWindow : Window
     public ObservableCollection<SearchJob> Searches { get; }=[]; public ObservableCollection<string> Logs { get; }=[];
     public MainWindow()
     {
-        InitializeComponent();DataContext=this;_repo=new Repository(AppPaths.StateFile);_repo.Initialize();RefreshJobs();
+        InitializeComponent();DataContext=this;
+        var logoPath=Path.Combine(AppContext.BaseDirectory,"Assets","marketwatcher.png");
+        if(File.Exists(logoPath)){var logo=new System.Windows.Media.Imaging.BitmapImage();logo.BeginInit();logo.CacheOption=System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;logo.UriSource=new Uri(logoPath,UriKind.Absolute);logo.EndInit();logo.Freeze();SidebarLogo.Source=logo;HeaderLogo.Source=logo;}
+        CollapseSidebar_Click(this,new RoutedEventArgs());
+        _repo=new Repository(AppPaths.StateFile);_repo.Initialize();RefreshJobs();
         _watcher=new WatcherService(_repo,AddLog,RefreshJobs);_watcher.ManualInterventionRequired+=ShowBrowserWarning;AutoStartBox.IsChecked=AutoStartManager.IsEnabled();
         _statusTimer=new(){Interval=TimeSpan.FromSeconds(1)};_statusTimer.Tick+=(_,_)=>UpdateDashboard();_statusTimer.Start();UpdateDashboard();
         var iconPath=Path.Combine(AppContext.BaseDirectory,"Assets","marketwatcher.ico");
@@ -65,12 +69,12 @@ public partial class MainWindow : Window
     private void CardMore_Click(object sender,RoutedEventArgs e)
     {
         SelectCard(sender);if(SearchGrid.SelectedItem is not SearchJob job||sender is not FrameworkElement button)return;
-        var menu=new System.Windows.Controls.ContextMenu{Background=new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(24,36,50)),Foreground=System.Windows.Media.Brushes.White};
+        var menu=new System.Windows.Controls.ContextMenu{Style=(Style)FindResource("DarkMenu")};
         var open=new System.Windows.Controls.MenuItem{Header="Anzeigeportal / Such-URL öffnen"};open.Click+=(_,_)=>Process.Start(new ProcessStartInfo(job.Url){UseShellExecute=true});menu.Items.Add(open);
         var run=new System.Windows.Controls.MenuItem{Header="Jetzt prüfen"};run.Click+=(_,_)=>RunNow_Click(button,new RoutedEventArgs());menu.Items.Add(run);
         var toggle=new System.Windows.Controls.MenuItem{Header=job.Enabled?"Suche pausieren":"Suche fortsetzen"};toggle.Click+=(_,_)=>Toggle_Click(button,new RoutedEventArgs());menu.Items.Add(toggle);
         var recipients=new System.Windows.Controls.MenuItem{Header="Empfänger zuordnen"};recipients.Click+=(_,_)=>AssignRecipients_Click(button,new RoutedEventArgs());menu.Items.Add(recipients);
-        menu.Items.Add(new System.Windows.Controls.Separator());var delete=new System.Windows.Controls.MenuItem{Header="Suche löschen",Foreground=new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255,135,151))};delete.Click+=(_,_)=>Delete_Click(button,new RoutedEventArgs());menu.Items.Add(delete);
+        var delete=new System.Windows.Controls.MenuItem{Header="Suche löschen",Foreground=new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255,135,151))};delete.Click+=(_,_)=>Delete_Click(button,new RoutedEventArgs());menu.Items.Add(delete);
         button.ContextMenu=menu;menu.IsOpen=true;
     }
     private void SelectCard(object sender){if(sender is FrameworkElement {DataContext:SearchJob job})SearchGrid.SelectedItem=job;}
@@ -91,7 +95,15 @@ public partial class MainWindow : Window
     private void Recipients_Click(object sender,RoutedEventArgs e){if(SearchGrid.SelectedItem is SearchJob)AssignRecipients_Click(sender,e);else Email_Click(sender,e);}
     private void CollapseSidebar_Click(object sender,RoutedEventArgs e)
     {
-        _sidebarCollapsed=!_sidebarCollapsed;SidebarColumn.Width=new GridLength(_sidebarCollapsed?70:230);CollapseButton.Content=_sidebarCollapsed?"›":"‹";
+        _sidebarCollapsed=!_sidebarCollapsed;SidebarColumn.Width=new GridLength(_sidebarCollapsed?80:250);CollapseButton.Content=_sidebarCollapsed?"›":"‹";
+        HeaderLogo.Visibility=_sidebarCollapsed?Visibility.Visible:Visibility.Collapsed;
+        foreach(var label in new[]{OverviewNavText,SearchesNavText,RecipientsNavText,SettingsNavText})
+        {
+            var panel=(System.Windows.Controls.StackPanel)label.Parent;var nav=(System.Windows.Controls.Button)panel.Parent;
+            nav.Padding=_sidebarCollapsed?new Thickness(10,14,10,14):new Thickness(17,14,17,14);
+            nav.HorizontalContentAlignment=_sidebarCollapsed?System.Windows.HorizontalAlignment.Center:System.Windows.HorizontalAlignment.Left;
+            ((System.Windows.Controls.TextBlock)panel.Children[0]).Width=_sidebarCollapsed?28:38;
+        }
         BrandPanel.Visibility=OverviewNavText.Visibility=SearchesNavText.Visibility=RecipientsNavText.Visibility=SettingsNavText.Visibility=SidebarAgentText.Visibility=SidebarVersionText.Visibility=CopyrightText.Visibility=GithubText.Visibility=_sidebarCollapsed?Visibility.Collapsed:Visibility.Visible;
         CollapseButton.ToolTip=_sidebarCollapsed?"Navigation ausklappen":"Navigation einklappen";
     }
