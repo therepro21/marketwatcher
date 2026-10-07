@@ -26,6 +26,7 @@ public sealed class SearchJob
     public string TelegramRecipientIds { get; set; } = "";
     public int SeenCount { get; set; }
     public string SearchNumber => $"#{Id}";
+    public string ActivityGroup => Enabled ? "Aktive Suchen" : "Pausierte Suchen";
     public string IntervalLabel => $"{IntervalSeconds} s";
     public string MatchModeLabel => MatchMode == "title_or_content" ? "Titel oder Inhalt" : "Nur Titel";
     public string RecipientsLabel => RecipientIds.Split(',',StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries).Length switch {0=>"Keine",1=>"1 Person",var n=>$"{n} Personen"};

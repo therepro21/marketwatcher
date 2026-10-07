@@ -19,6 +19,8 @@ public partial class MainWindow : Window
         var logoPath=Path.Combine(AppContext.BaseDirectory,"Assets","marketwatcher.png");
         if(File.Exists(logoPath)){var logo=new System.Windows.Media.Imaging.BitmapImage();logo.BeginInit();logo.CacheOption=System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;logo.UriSource=new Uri(logoPath,UriKind.Absolute);logo.EndInit();logo.Freeze();SidebarLogo.Source=logo;HeaderLogo.Source=logo;}
         CollapseSidebar_Click(this,new RoutedEventArgs());
+        var searchesView=System.Windows.Data.CollectionViewSource.GetDefaultView(Searches);
+        searchesView.GroupDescriptions.Add(new System.Windows.Data.PropertyGroupDescription(nameof(SearchJob.ActivityGroup)));
         _repo=new Repository(AppPaths.StateFile);_repo.Initialize();RefreshJobs();
         _watcher=new WatcherService(_repo,AddLog,RefreshJobs);_watcher.ManualInterventionRequired+=ShowBrowserWarning;AutoStartBox.IsChecked=AutoStartManager.IsEnabled();
         _statusTimer=new(){Interval=TimeSpan.FromSeconds(1)};_statusTimer.Tick+=(_,_)=>UpdateDashboard();_statusTimer.Start();UpdateDashboard();
@@ -30,6 +32,8 @@ public partial class MainWindow : Window
         menu.Items.Add("Beenden",null,(_,_)=>Dispatcher.Invoke(()=>{_exitRequested=true;Close();}));
         _trayIcon.ContextMenuStrip=menu;_trayIcon.DoubleClick+=(_,_)=>Dispatcher.Invoke(RestoreFromTray);
         StateChanged+=(_,_)=>{if(WindowState==WindowState.Minimized)Hide();};
+        Activated+=(_,_)=>ScrollLogToEnd();
+        IsVisibleChanged+=(_,_)=>{if(IsVisible){_statusTimer.Start();UpdateDashboard();ScrollLogToEnd();}else _statusTimer.Stop();};
         Loaded+=async(_,_)=>
         {
             try
@@ -148,9 +152,14 @@ public partial class MainWindow : Window
     {
         Logs.Add($"{DateTime.Now:HH:mm:ss}  {text}");
         while(Logs.Count>200)Logs.RemoveAt(0);
-        if(Logs.Count>0)LogList.ScrollIntoView(Logs[^1]);
+        if(IsVisible&&WindowState!=WindowState.Minimized)ScrollLogToEnd();
     });
-    private void RefreshJobs()=>Dispatcher.Invoke(()=>{Searches.Clear();foreach(var x in _repo.GetJobs())Searches.Add(x);UpdateDashboard();});
+    private void ScrollLogToEnd()
+    {
+        if(Logs.Count==0)return;
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded,new Action(()=>{if(IsVisible&&Logs.Count>0)LogList.ScrollIntoView(Logs[^1]);}));
+    }
+    private void RefreshJobs()=>Dispatcher.Invoke(()=>{var selectedId=(SearchGrid.SelectedItem as SearchJob)?.Id;Searches.Clear();foreach(var x in _repo.GetJobs().OrderByDescending(x=>x.Enabled).ThenBy(x=>x.Id))Searches.Add(x);if(selectedId.HasValue)SearchGrid.SelectedItem=Searches.FirstOrDefault(x=>x.Id==selectedId);UpdateDashboard();});
     private void UpdateDashboard()
     {
         if(!IsInitialized)return;var jobs=_repo.GetJobs();var active=jobs.Where(x=>x.Enabled).ToList();ActiveSearchText.Text=$"{active.Count} von {jobs.Count}";
