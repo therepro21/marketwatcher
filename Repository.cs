@@ -35,8 +35,19 @@ public sealed class Repository(string stateFile)
     }
     private PortableState LoadState()
     {
-        foreach(var candidate in new[]{stateFile,Path.Combine(AppPaths.BackupDirectory,"state-latest.json")})
-            try{if(File.Exists(candidate))return JsonSerializer.Deserialize<PortableState>(File.ReadAllText(candidate),_json)??new();}catch{}
+        var candidates=new[]{stateFile,Path.Combine(AppPaths.BackupDirectory,"state-latest.json")}
+            .Concat(Directory.EnumerateFiles(AppPaths.BackupDirectory,"state-history-*.json").OrderByDescending(File.GetLastWriteTimeUtc)).ToList();
+        var existing=candidates.Where(File.Exists).ToList();var failures=new List<string>();
+        foreach(var candidate in existing)
+            try
+            {
+                var loaded=JsonSerializer.Deserialize<PortableState>(File.ReadAllText(candidate),_json);
+                if(loaded is null||loaded.FormatVersion!=1)throw new InvalidDataException("Unbekanntes oder leeres Datenformat.");
+                if(candidate!=stateFile&&File.Exists(stateFile))File.Copy(stateFile,stateFile+".unreadable-"+DateTime.UtcNow.ToString("yyyyMMddHHmmssfff"),false);
+                return loaded;
+            }
+            catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or JsonException or InvalidDataException){failures.Add(Path.GetFileName(candidate)+": "+ex.Message);}
+        if(existing.Count>0)throw new InvalidDataException("Suchdaten konnten nicht geladen werden. Die Dateien werden nicht überschrieben. "+string.Join(" | ",failures));
         return new();
     }
     private static DateTime? ParseUtc(string? value)=>DateTime.TryParse(value,System.Globalization.CultureInfo.InvariantCulture,System.Globalization.DateTimeStyles.RoundtripKind,out var parsed)?parsed.ToUniversalTime():null;
@@ -72,7 +83,13 @@ public sealed class Repository(string stateFile)
     private void SaveLocked(bool backup=true)
     {
         foreach(var job in _state.Jobs)job.SeenCount=_state.SeenItems.Count(x=>x.JobId==job.Id);
-        var text=JsonSerializer.Serialize(_state,_json);var temp=stateFile+".tmp";File.WriteAllText(temp,text);File.Move(temp,stateFile,true);
+        var text=JsonSerializer.Serialize(_state,_json);var temp=stateFile+".tmp";File.WriteAllText(temp,text);
+        if(backup&&File.Exists(stateFile))
+        {
+            var history=Path.Combine(AppPaths.BackupDirectory,"state-history-"+DateTime.UtcNow.ToString("yyyyMMddHHmmssfff")+"-"+Guid.NewGuid().ToString("N")+".json");
+            File.Copy(stateFile,history,false);
+        }
+        File.Move(temp,stateFile,true);
         if(backup){var backupFile=Path.Combine(AppPaths.BackupDirectory,"state-latest.json");File.Copy(stateFile,backupFile,true);}
     }
     private T RoundTrip<T>(T value)=>JsonSerializer.Deserialize<T>(JsonSerializer.Serialize(value,_json),_json)!;
