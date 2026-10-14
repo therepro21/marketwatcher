@@ -13,11 +13,15 @@ public sealed class BrowserScanner : IAsyncDisposable
     private IBrowser? _browser;
     private IBrowserContext? _context;
     private Process? _edgeProcess;
-    public bool IsRunning => _context is not null && _edgeProcess is not null && !_edgeProcess.HasExited;
+    public event Action<string>? Diagnostic;
+    public bool IsRunning => _context is not null && _browser?.IsConnected==true && _edgeProcess is not null && !_edgeProcess.HasExited;
 
     public async Task StartAsync(bool headless = true)
     {
-        if (_context is not null) return;
+        if (IsRunning) return;
+        var recovering=_context is not null||_edgeProcess is not null;
+        await CloseAsync();
+        if(recovering)Diagnostic?.Invoke("Edge-Verbindung verloren · Browser wird automatisch neu gestartet.");
         var edge = BrowserFinder.FindEdge() ?? throw new InvalidOperationException("Microsoft Edge wurde nicht gefunden.");
         Directory.CreateDirectory(AppPaths.EdgeProfile);
         var portFile=Path.Combine(AppPaths.EdgeProfile,"DevToolsActivePort");
@@ -56,6 +60,17 @@ public sealed class BrowserScanner : IAsyncDisposable
     }
 
     public async Task<List<Listing>> ScanAsync(SearchJob job)
+    {
+        try{return await ScanCoreAsync(job);}
+        catch(PlaywrightException ex) when(!IsRunning || ex.Message.Contains("has been closed",StringComparison.OrdinalIgnoreCase))
+        {
+            Diagnostic?.Invoke("Edge während der Prüfung geschlossen · Neustart und einmalige Wiederholung der Suche.");
+            await CloseAsync();
+            return await ScanCoreAsync(job);
+        }
+    }
+
+    private async Task<List<Listing>> ScanCoreAsync(SearchJob job)
     {
         await StartAsync();
         var page = _context!.Pages.FirstOrDefault() ?? await _context.NewPageAsync();
@@ -250,7 +265,7 @@ async a => {
     }
     public async Task CloseAsync()
     {
-        if(_browser is not null){try{await _browser.CloseAsync();}catch{} _browser=null;}
+        if(_browser is not null){try{await _browser.CloseAsync().WaitAsync(TimeSpan.FromSeconds(8));}catch{} _browser=null;}
         _context=null;
         _playwright?.Dispose(); _playwright = null;
         await StopOwnedEdgeAsync();

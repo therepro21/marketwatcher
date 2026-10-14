@@ -150,6 +150,13 @@ public partial class MainWindow : Window
     private void PlatformLink_Click(object sender,System.Windows.Navigation.RequestNavigateEventArgs e){Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri){UseShellExecute=true});e.Handled=true;}
     private void AddLog(string text)=>Dispatcher.Invoke(()=>
     {
+        try
+        {
+            var logFile=Path.Combine(AppPaths.Root,"activity.log");
+            if(File.Exists(logFile)&&new FileInfo(logFile).Length>2_000_000)File.Move(logFile,logFile+".previous",true);
+            File.AppendAllText(logFile,$"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  {text}{Environment.NewLine}");
+        }
+        catch(IOException){}catch(UnauthorizedAccessException){}
         Logs.Add($"{DateTime.Now:HH:mm:ss}  {text}");
         while(Logs.Count>200)Logs.RemoveAt(0);
         if(IsVisible&&WindowState!=WindowState.Minimized)ScrollLogToEnd();

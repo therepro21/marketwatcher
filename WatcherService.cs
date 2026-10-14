@@ -7,7 +7,7 @@ public sealed class WatcherService : IAsyncDisposable
     private readonly BrowserScanner _scanner = new(); private readonly CancellationTokenSource _stop = new();
     private readonly SemaphoreSlim _gate = new(1,1);private readonly SemaphoreSlim _wake = new(0,1); private Task? _loop;
     private System.Diagnostics.Process? _manualEdgeProcess;
-    public WatcherService(Repository repo, Action<string> log, Action refresh){_repo=repo;_log=log;_refresh=refresh;}
+    public WatcherService(Repository repo, Action<string> log, Action refresh){_repo=repo;_log=log;_refresh=refresh;_scanner.Diagnostic+=log;}
     public Task StartAsync(){_loop=LoopAsync();return Task.CompletedTask;}
     private async Task LoopAsync()
     {
