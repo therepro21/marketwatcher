@@ -42,6 +42,7 @@ public static class UrlAnalyzer
     public static string Platform(Uri uri) => uri.Host.ToLowerInvariant() switch
     {
         var h when h.Contains("willhaben.") => "willhaben",
+        var h when h=="amazon.de"||h.EndsWith(".amazon.de")||h=="amazon.at"||h.EndsWith(".amazon.at") => "Amazon",
         var h when h.Contains("kleinanzeigen.") => "Kleinanzeigen",
         var h when h.Contains("vinted.") => "Vinted",
         var h when h.Contains("ebay.") => "eBay",

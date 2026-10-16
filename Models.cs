@@ -25,20 +25,48 @@ public sealed class SearchJob
     public string RecipientIds { get; set; } = "recipient-1,recipient-2";
     public string TelegramRecipientIds { get; set; } = "";
     public int SeenCount { get; set; }
+    public AmazonWatchSettings Amazon { get; set; } = new();
+    public Dictionary<string,bool> AmazonConditions { get; set; } = new();
     public string SearchNumber => $"#{Id}";
     public string ActivityGroup => Enabled ? "Aktive Suchen" : "Pausierte Suchen";
     public string IntervalLabel => $"{IntervalSeconds} s";
-    public string MatchModeLabel => MatchMode == "title_or_content" ? "Titel oder Inhalt" : "Nur Titel";
+    public string MatchModeLabel => Platform=="Amazon" ? "Preis / Lieferbarkeit / Prime" : MatchMode == "title_or_content" ? "Titel oder Inhalt" : "Nur Titel";
     public string RecipientsLabel => RecipientIds.Split(',',StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries).Length switch {0=>"Keine",1=>"1 Person",var n=>$"{n} Personen"};
     public string LastRunLabel => LastRunUtc?.ToLocalTime().ToString("dd.MM. HH:mm:ss") ?? "–";
     public string PortalLogoPath
     {
         get
         {
-            var file=Platform.ToLowerInvariant() switch{"willhaben"=>"willhaben.png","kleinanzeigen"=>"kleinanzeigen.png","vinted"=>"Vinted.png","markt.de"=>"markt.de.png","quoka"=>"Quoka.png","tutti"=>"Tutti.png",var x when x.StartsWith("ebay")=>"eBay.png",_=>""};
+            var file=Platform.ToLowerInvariant() switch{"amazon"=>"Amazon.png","willhaben"=>"willhaben.png","kleinanzeigen"=>"kleinanzeigen.png","vinted"=>"Vinted.png","markt.de"=>"markt.de.png","quoka"=>"Quoka.png","tutti"=>"Tutti.png",var x when x.StartsWith("ebay")=>"eBay.png",_=>""};
             return string.IsNullOrEmpty(file)?"":Path.Combine(AppContext.BaseDirectory,"Assets","Portals",file);
         }
     }
+}
+
+public sealed class AmazonWatchSettings
+{
+    public bool NotifyAvailable { get; set; }
+    public bool WatchNewPrice { get; set; } = true;
+    public decimal? NewBelow { get; set; }
+    public bool WatchUsed { get; set; } = true;
+    public decimal? UsedBelow { get; set; }
+    public bool NotifyPrime { get; set; } = true;
+    public bool OnlyAmazonResale { get; set; }
+}
+
+public sealed class AmazonObservation
+{
+    public string Title { get; set; } = "";
+    public string Url { get; set; } = "";
+    public string ImageUrl { get; set; } = "";
+    public List<AmazonOffer> Offers { get; set; } = [];
+}
+public sealed class AmazonOffer
+{
+    public decimal? Price { get; set; }
+    public bool Used { get; set; }
+    public bool Prime { get; set; }
+    public bool Resale { get; set; }
 }
 
 public sealed class RuntimeStatistics

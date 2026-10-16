@@ -60,10 +60,17 @@ public partial class MainWindow : Window
     {
         if(!Uri.TryCreate(UrlBox.Text.Trim(),UriKind.Absolute,out var uri)||uri.Scheme is not("http" or "https")){MessageBox.Show("Bitte eine gültige Such-URL einfügen.");return;}
         if(!int.TryParse(IntervalBox.Text,out var seconds)||seconds<30)seconds=60;
+        AmazonSettingsWindow? amazonDialog=null;
+        if(UrlAnalyzer.Platform(uri)=="Amazon")
+        {
+            try{amazonDialog=new AmazonSettingsWindow(uri.ToString()){Owner=this};if(amazonDialog.ShowDialog()!=true)return;seconds=amazonDialog.IntervalSeconds;}
+            catch(Exception ex){MessageBox.Show(ex.Message,"Amazon-Produktlink");return;}
+        }
         var matchMode=(MatchModeBox.SelectedItem as System.Windows.Controls.ComboBoxItem)?.Tag?.ToString() ?? "title_or_content";
         var recipientIds=string.Join(',',_repo.GetWhatsApp().Recipients.Where(x=>x.Enabled).Select(x=>x.Id));
         var telegramIds=string.Join(',',_repo.GetTelegram().Recipients.Where(x=>x.Enabled).Select(x=>x.Id));
         var job=new SearchJob{Name=string.IsNullOrWhiteSpace(NameBox.Text)?UrlAnalyzer.GuessName(uri):NameBox.Text.Trim(),Url=uri.ToString(),Platform=UrlAnalyzer.Platform(uri),IntervalSeconds=seconds,Enabled=true,Status="Neu – erster Lauf wird Basisbestand",MatchMode=matchMode,RecipientIds=recipientIds,TelegramRecipientIds=telegramIds};
+        if(amazonDialog is not null){job.Amazon=amazonDialog.Settings;job.Name=string.IsNullOrWhiteSpace(NameBox.Text)?"Amazon · "+AmazonRules.Asin(job.Url):NameBox.Text.Trim();}
         job.Id=_repo.AddJob(job);_watcher.NotifyScheduleChanged();RefreshJobs();UrlBox.Clear();NameBox.Clear();AddLog($"Suche hinzugefügt: {job.Name}");await _watcher.RunJobAsync(job.Id,true);
     }
     private async void RunNow_Click(object sender,RoutedEventArgs e){if(SearchGrid.SelectedItem is SearchJob j)await _watcher.RunJobAsync(j.Id,false);}
@@ -74,6 +81,12 @@ public partial class MainWindow : Window
     {
         SelectCard(sender);if(SearchGrid.SelectedItem is not SearchJob job||sender is not FrameworkElement button)return;
         var menu=new System.Windows.Controls.ContextMenu{Style=(Style)FindResource("DarkMenu")};
+        if(job.Platform=="Amazon")
+        {
+            var rules=new System.Windows.Controls.MenuItem{Header="Amazon: Alarmregeln / Intervall"};
+            rules.Click+=(_,_)=>{var dialog=new AmazonSettingsWindow(job.Url,job.Amazon,job.IntervalSeconds){Owner=this};if(dialog.ShowDialog()==true){_repo.UpdateAmazon(job.Id,dialog.Settings,dialog.IntervalSeconds);_watcher.NotifyScheduleChanged();RefreshJobs();}};
+            menu.Items.Add(rules);
+        }
         var open=new System.Windows.Controls.MenuItem{Header="Anzeigeportal / Such-URL öffnen"};open.Click+=(_,_)=>Process.Start(new ProcessStartInfo(job.Url){UseShellExecute=true});menu.Items.Add(open);
         var run=new System.Windows.Controls.MenuItem{Header="Jetzt prüfen"};run.Click+=(_,_)=>RunNow_Click(button,new RoutedEventArgs());menu.Items.Add(run);
         var toggle=new System.Windows.Controls.MenuItem{Header=job.Enabled?"Suche pausieren":"Suche fortsetzen"};toggle.Click+=(_,_)=>Toggle_Click(button,new RoutedEventArgs());menu.Items.Add(toggle);

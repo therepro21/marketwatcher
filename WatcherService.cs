@@ -40,6 +40,7 @@ public sealed class WatcherService : IAsyncDisposable
         try
         {
             var job=_repo.GetJob(id); if(job is null)return; _log($"SUCHE #{job.Id} · PORTAL: {job.Platform} · SUCHBEGRIFF: {job.Name} · Prüfung läuft …");
+            if(job.Platform=="Amazon"){await RunAmazonAsync(job);return;}
             var items=await _scanner.ScanAsync(job); var initial=!job.Initialized; var fresh=new List<Listing>();
             if(_repo.GetJob(id)?.Enabled!=true){_log($"{job.Name}: Prüfung abgebrochen, weil die Suche pausiert wurde.");return;}
             foreach(var item in items) if(_repo.AddSeen(job.Id,BrowserScanner.Fingerprint(job.Platform,item),item,!initial)) fresh.Add(item);
@@ -71,6 +72,24 @@ public sealed class WatcherService : IAsyncDisposable
         if(elapsed.TotalHours>=1)return $"{(int)elapsed.TotalHours} Std. {elapsed.Minutes} Min.";
         return $"{elapsed.Minutes} Min.";
     }
+    private async Task RunAmazonAsync(SearchJob job)
+    {
+        var observation=await _scanner.ScanAmazonAsync(job);
+        if(_repo.GetJob(job.Id)?.Enabled!=true)return;
+        if(job.Name.StartsWith("Amazon · ",StringComparison.Ordinal))_repo.UpdateAmazonTitle(job.Id,observation.Title);
+        var evaluation=AmazonRules.Evaluate(job,observation);
+        if(evaluation.Alerts.Count>0)
+        {
+            var listing=new Listing(AmazonRules.Asin(job.Url),observation.Title,job.Url,string.Join(" · ",evaluation.Alerts),observation.ImageUrl);
+            var errors=await SendNotificationsAsync(job,[listing]);
+            if(errors.Count>0){_repo.RecordErrors(errors.Count);throw new InvalidOperationException(string.Join(" | ",errors));}
+            _repo.RecordSuccessfulNotifications(1);_repo.SetLastNewResult(job.Id,DateTime.UtcNow);
+            _log($"SUCHE #{job.Id} · Amazon · {observation.Title} · {string.Join(" · ",evaluation.Alerts)}");
+        }
+        _repo.UpdateAmazonObservation(job.Id,evaluation.Conditions);
+        _repo.UpdateRun(job.Id,true,"Amazon · "+evaluation.Summary);
+        _log($"SUCHE #{job.Id} · Amazon · {evaluation.Summary}");
+    }
     public async Task ResumeFromNowAsync(long id)
     {
         if(!await _gate.WaitAsync(0)){_log("Ein Suchlauf ist bereits aktiv.");return;}
@@ -78,6 +97,14 @@ public sealed class WatcherService : IAsyncDisposable
         {
             var job=_repo.GetJob(id);if(job is null)return;
             _log($"{job.Name}: aktueller Stand wird ohne Meldungen übernommen …");
+            if(job.Platform=="Amazon")
+            {
+                var observation=await _scanner.ScanAmazonAsync(job);
+                var evaluation=AmazonRules.Evaluate(job,observation);
+                _repo.UpdateAmazonObservation(job.Id,evaluation.Conditions);
+                _repo.UpdateRun(job.Id,true,"Amazon · Fortgesetzt ab jetzt · "+evaluation.Summary);
+                _repo.SetEnabled(job.Id,true);NotifyScheduleChanged();return;
+            }
             var items=await _scanner.ScanAsync(job);
             foreach(var item in items)_repo.AddSeen(job.Id,BrowserScanner.Fingerprint(job.Platform,item),item,false);
             _repo.UpdateRun(job.Id,true,$"Fortgesetzt ab jetzt · {items.Count} aktuelle Treffer ausgeschlossen");

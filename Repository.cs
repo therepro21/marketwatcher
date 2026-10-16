@@ -57,6 +57,9 @@ public sealed class Repository(string stateFile)
     public void SetEnabled(long id,bool value)=>ChangeJob(id,x=>x.Enabled=value);
     public void UpdateSchedule(long id,int seconds,bool enabled)=>ChangeJob(id,x=>{x.IntervalSeconds=seconds;x.Enabled=enabled;});
     public void UpdateMatchMode(long id,string mode)=>ChangeJob(id,x=>x.MatchMode=mode);
+    public void UpdateAmazon(long id,AmazonWatchSettings settings,int interval)=>ChangeJob(id,x=>{x.Amazon=settings;x.IntervalSeconds=interval;x.AmazonConditions.Clear();});
+    public void UpdateAmazonObservation(long id,Dictionary<string,bool> conditions)=>ChangeJob(id,x=>x.AmazonConditions=conditions);
+    public void UpdateAmazonTitle(long id,string title)=>ChangeJob(id,x=>{if(x.Name.StartsWith("Amazon · ",StringComparison.Ordinal))x.Name=title;});
     public void UpdateRecipients(long id,bool first,bool second)=>ChangeJob(id,x=>{x.SendToFirst=first;x.SendToSecond=second;});
     public void UpdateRecipients(long id,string ids)=>ChangeJob(id,x=>x.RecipientIds=ids);
     public void UpdateRecipients(long id,string whatsappIds,string telegramIds)=>ChangeJob(id,x=>{x.RecipientIds=whatsappIds;x.TelegramRecipientIds=telegramIds;});

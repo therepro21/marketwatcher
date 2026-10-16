@@ -7,7 +7,7 @@ using System.Text;
 
 namespace MarketWatcher;
 
-public sealed class BrowserScanner : IAsyncDisposable
+public sealed partial class BrowserScanner : IAsyncDisposable
 {
     private IPlaywright? _playwright;
     private IBrowser? _browser;
@@ -61,12 +61,15 @@ public sealed class BrowserScanner : IAsyncDisposable
 
     public async Task<List<Listing>> ScanAsync(SearchJob job)
     {
-        try{return await ScanCoreAsync(job);}
-        catch(PlaywrightException ex) when(!IsRunning || ex.Message.Contains("has been closed",StringComparison.OrdinalIgnoreCase))
+        for(var attempt=1;;attempt++)
         {
-            Diagnostic?.Invoke("Edge während der Prüfung geschlossen · Neustart und einmalige Wiederholung der Suche.");
-            await CloseAsync();
-            return await ScanCoreAsync(job);
+            try{return await ScanCoreAsync(job);}
+            catch(PlaywrightException) when(attempt<3)
+            {
+                Diagnostic?.Invoke($"SUCHE #{job.Id} · {job.Platform} · Ladefehler · Versuch {attempt}/3 · Seite wird neu geöffnet.");
+                await CloseAsync();
+                await Task.Delay(attempt*1500);
+            }
         }
     }
 
@@ -86,6 +89,8 @@ public sealed class BrowserScanner : IAsyncDisposable
             await page.WaitForTimeoutAsync(1800);
             var title = await page.TitleAsync();
             var body = (await page.Locator("body").InnerTextAsync(new LocatorInnerTextOptions { Timeout = 10000 })).ToLowerInvariant();
+            if(body.Length<100||body.Contains("err_connection_reset")||body.Contains("err_connection_closed")||body.Contains("err_empty_response"))
+                throw new PlaywrightException("Seite unvollständig geladen oder Netzwerkfehler; erneuter Ladeversuch erforderlich.");
             if(await TryRejectCookiesAsync(page)){await page.WaitForTimeoutAsync(600);body=(await page.Locator("body").InnerTextAsync()).ToLowerInvariant();}
             var challenge=await DetectInterventionAsync(page,title,body);
             if(challenge is not null)throw new BrowserChallengeException(job.Platform,job.Name,targetUrl,challenge);
