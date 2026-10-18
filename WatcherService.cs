@@ -69,12 +69,14 @@ public sealed class WatcherService : IAsyncDisposable
             foreach(var item in items) if(_repo.AddSeen(job.Id,BrowserScanner.Fingerprint(job.Platform,item),item,!initial)) fresh.Add(item);
             if(job.SkipBacklogOnce)_repo.CompleteBacklogBaseline(job.Id);
             if(initial){var now=DateTime.UtcNow;_repo.SetLastNewResult(job.Id,now);var status=$"PORTAL: {job.Platform} · SUCHBEGRIFF: {job.Name} · Basisbestand: {items.Count} Treffer";_repo.UpdateRun(job.Id,true,status);_log($"SUCHE #{job.Id} · {status}");}
-            else if(fresh.Count==0){var since=FormatElapsed(DateTime.UtcNow-(job.LastNewResultUtc??job.LastRunUtc??DateTime.UtcNow));var status=$"PORTAL: {job.Platform} · SUCHBEGRIFF: {job.Name} · Seit {since} keine neuen Ergebnisse · {items.Count} aktuelle Treffer";_repo.UpdateRun(job.Id,true,status);_log($"SUCHE #{job.Id} · {status}");}
+            else if(fresh.Count==0&&_repo.GetPending(job.Id).Count==0){var since=FormatElapsed(DateTime.UtcNow-(job.LastNewResultUtc??job.LastRunUtc??DateTime.UtcNow));var status=$"PORTAL: {job.Platform} · SUCHBEGRIFF: {job.Name} · Seit {since} keine neuen Ergebnisse · {items.Count} aktuelle Treffer";_repo.UpdateRun(job.Id,true,status);_log($"SUCHE #{job.Id} · {status}");}
             else
             {
-                var errors=await SendNotificationsAsync(job,fresh);
-                if(errors.Count==0)_repo.RecordSuccessfulNotifications(fresh.Count);else _repo.RecordErrors(errors.Count);
-                _repo.SetLastNewResult(job.Id,DateTime.UtcNow);var status=$"PORTAL: {job.Platform} · SUCHBEGRIFF: {job.Name} · {fresh.Count} neue Ergebnisse"+(errors.Count==0?" und gemeldet":$" · {errors.Count} Meldefehler");_repo.UpdateRun(job.Id,true,status);
+                var pendingBefore=_repo.GetPending(job.Id).Count;
+                var errors=await SendQueuedAsync(job);
+                var waiting=_repo.GetPending(job.Id).Count;
+                _repo.RecordSuccessfulNotifications(pendingBefore-waiting);if(errors.Count>0)_repo.RecordErrors(errors.Count);
+                if(fresh.Count>0)_repo.SetLastNewResult(job.Id,DateTime.UtcNow);var status=$"PORTAL: {job.Platform} · SUCHBEGRIFF: {job.Name} · {fresh.Count} neue Ergebnisse · {pendingBefore-waiting} Meldungen bestätigt · {waiting} warten auf Versand"+(errors.Count==0?"":$" · {errors.Count} Meldefehler");_repo.UpdateRun(job.Id,true,status);
                 _log($"SUCHE #{job.Id} · {status}"+(errors.Count==0?"":$" · {string.Join(" | ",errors)}"));
             }
         }
@@ -85,7 +87,7 @@ public sealed class WatcherService : IAsyncDisposable
         {
             var keepBrowser=!IsGloballyPaused&&_repo.GetGeneral().KeepBrowserOpen&&_repo.GetJobs().Any(x=>x.Enabled);
             if(!keepBrowser)try{await _scanner.CloseAsync();}catch(Exception ex){_log("Browser konnte nicht vollständig geschlossen werden: "+ex.Message);}
-            elapsed.Stop();_log($"SUCHE #{id} · Laufzeit {elapsed.Elapsed.TotalSeconds:0.0} Sek. · Edge {(reusedBrowser?keepBrowser?"wiederverwendet und bleibt geöffnet":"wiederverwendet und geschlossen":keepBrowser?"gestartet und bleibt unsichtbar geöffnet":"neu gestartet und geschlossen")}");
+            elapsed.Stop();_log($"SUCHE #{id} · Laufzeit {elapsed.Elapsed.TotalSeconds:0.0} Sek. · Edge {(_scanner.IsRunning?"verbunden und bleibt unsichtbar geöffnet":keepBrowser?"nicht verbunden · automatischer neuer Versuch beim nächsten Lauf":"geschlossen")}");
             _gate.Release();_refresh();
         }
     }
@@ -181,19 +183,7 @@ public sealed class WatcherService : IAsyncDisposable
         BrowserScanner.CleanDisposableCaches();
         _log("Sichtbarer Prüf-Browser geschlossen. Weitere Läufe starten wieder unsichtbar.");
     }
-    private static async Task CleanupProfileEdgeProcessesAsync()
-    {
-        var profile=System.IO.Path.GetFullPath(AppPaths.EdgeProfile).Replace("'","''");
-        var script="$profile='"+profile+"'; Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($profile) } | Select-Object -ExpandProperty ProcessId";
-        var start=new System.Diagnostics.ProcessStartInfo("powershell.exe"){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
-        start.ArgumentList.Add("-NoProfile");start.ArgumentList.Add("-NonInteractive");start.ArgumentList.Add("-WindowStyle");start.ArgumentList.Add("Hidden");start.ArgumentList.Add("-Command");start.ArgumentList.Add(script);
-        try
-        {
-            using var query=System.Diagnostics.Process.Start(start);if(query is null)return;var output=await query.StandardOutput.ReadToEndAsync();await query.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
-            foreach(var line in output.Split(new[]{'\r','\n'},StringSplitOptions.RemoveEmptyEntries))if(int.TryParse(line.Trim(),out var pid))try{using var edge=System.Diagnostics.Process.GetProcessById(pid);edge.Kill(true);await edge.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));}catch{}
-        }
-        catch{}
-    }
+    private static Task CleanupProfileEdgeProcessesAsync()=>BrowserScanner.CleanupProfileProcessesAsync();
     private async Task<List<string>> SendNotificationsAsync(SearchJob job,IReadOnlyList<Listing> items)
     {
         var errors=new List<string>();
@@ -208,6 +198,42 @@ public sealed class WatcherService : IAsyncDisposable
             foreach(var recipient in wa.Recipients)recipient.Selected=selected.Contains(recipient.Id);
             await SendWhatsAppConfiguredAsync(wa,job,items);
         }catch(Exception ex){errors.Add("WhatsApp: "+ex.Message);}
+        return errors;
+    }
+    private async Task<List<string>> SendQueuedAsync(SearchJob job)
+    {
+        var errors=new List<string>();var pending=_repo.GetPending(job.Id);
+        if(pending.Any(x=>x.Targets.Count==0))errors.Add("Keine aktiven Benachrichtigungsempfänger für wartende Treffer.");
+        foreach(var target in pending.SelectMany(x=>x.Targets.Except(x.Delivered)).Distinct())
+        {
+            if(IsGloballyPaused)break;
+            var batch=pending.Where(x=>x.Targets.Contains(target)&&!x.Delivered.Contains(target)).ToList();
+            foreach(var delivery in batch)
+            {
+            if(IsGloballyPaused)break;
+            try
+            {
+                var listings=new List<Listing>{delivery.Item};
+                if(target=="email")await EmailSender.SendAsync(_repo.GetEmail(),job,listings);
+                else if(target.StartsWith("wa:"))
+                {
+                    var wa=_repo.GetWhatsApp();var recipient=wa.Recipients.FirstOrDefault(x=>x.Id==target[3..]&&x.Enabled);
+                    if(!wa.Enabled||recipient is null)throw new InvalidOperationException("WhatsApp-Empfänger deaktiviert oder entfernt.");
+                    wa.Recipients=[recipient];recipient.Selected=true;await SendWhatsAppConfiguredAsync(wa,job,listings);
+                }
+                else if(target.StartsWith("tg:"))
+                {
+                    var tg=_repo.GetTelegram();var recipient=tg.Recipients.FirstOrDefault(x=>x.Id==target[3..]&&x.Enabled);
+                    if(!tg.Enabled||recipient is null)throw new InvalidOperationException("Telegram-Empfänger deaktiviert oder entfernt.");
+                    tg.Recipients=[recipient];recipient.Selected=true;await TelegramSender.SendAsync(tg,job,listings);
+                }
+                else throw new InvalidOperationException("Unbekannter Versandkanal.");
+                _repo.ConfirmDelivery(delivery.Fingerprint,target);
+                _log($"SUCHE #{job.Id} · Versand bestätigt · {target.Split(':')[0]} · {delivery.Item.Title}");
+            }
+            catch(Exception ex){errors.Add(target.Split(':')[0]+": "+ex.Message);}
+            }
+        }
         return errors;
     }
     public async Task TestWhatsAppAsync(WhatsAppSettings settings)

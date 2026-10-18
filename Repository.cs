@@ -69,7 +69,36 @@ public sealed class Repository(string stateFile)
     private void ChangeJob(long id,Action<SearchJob> change){lock(_sync){var job=_state.Jobs.FirstOrDefault(x=>x.Id==id);if(job is null)return;change(job);SaveLocked();}}
     public bool AddSeen(long jobId,string fingerprint,Listing item,bool notified)
     {
-        lock(_sync){if(_state.SeenItems.Any(x=>x.Fingerprint==fingerprint))return false;_state.SeenItems.Add(new(){Fingerprint=fingerprint,JobId=jobId,ExternalId=item.ExternalId,Title=item.Title,Url=item.Url,Price=item.Price,FirstSeenUtc=DateTime.UtcNow.ToString("O"),NotifiedUtc=notified?DateTime.UtcNow.ToString("O"):null});SaveLocked(false);return true;}
+        lock(_sync){if(_state.SeenItems.Any(x=>x.Fingerprint==fingerprint))return false;_state.SeenItems.Add(new(){Fingerprint=fingerprint,JobId=jobId,ExternalId=item.ExternalId,Title=item.Title,Url=item.Url,Price=item.Price,FirstSeenUtc=DateTime.UtcNow.ToString("O"),NotifiedUtc=null});if(notified)QueueLocked(jobId,fingerprint,item);SaveLocked(false);return true;}
+    }
+    private void QueueLocked(long jobId,string fingerprint,Listing item)
+    {
+        if(_state.Outbox.Any(x=>x.Fingerprint==fingerprint))return;
+        var job=_state.Jobs.First(x=>x.Id==jobId);var targets=new List<string>();
+        if(!string.IsNullOrWhiteSpace(_state.Email.User)&&!string.IsNullOrWhiteSpace(_state.Email.Recipient))targets.Add("email");
+        var wa=job.RecipientIds.Split(',').ToHashSet();var tg=job.TelegramRecipientIds.Split(',').ToHashSet();
+        if(_state.WhatsApp.Enabled)targets.AddRange(_state.WhatsApp.Recipients.Where(x=>x.Enabled&&wa.Contains(x.Id)).Select(x=>"wa:"+x.Id));
+        if(_state.Telegram.Enabled)targets.AddRange(_state.Telegram.Recipients.Where(x=>x.Enabled&&tg.Contains(x.Id)).Select(x=>"tg:"+x.Id));
+        _state.Outbox.Add(new(){JobId=jobId,Fingerprint=fingerprint,Item=item,Targets=targets});
+    }
+    public List<PendingDelivery> GetPending(long jobId){lock(_sync)return RoundTrip(_state.Outbox.Where(x=>x.JobId==jobId).ToList());}
+    public void ConfirmDelivery(string fingerprint,string target)
+    {
+        lock(_sync)
+        {
+            var pending=_state.Outbox.FirstOrDefault(x=>x.Fingerprint==fingerprint);if(pending is null)return;
+            if(!pending.Delivered.Contains(target))pending.Delivered.Add(target);
+            if(pending.Targets.Count>0&&pending.Targets.All(pending.Delivered.Contains))
+            {
+                var seen=_state.SeenItems.FirstOrDefault(x=>x.Fingerprint==fingerprint);if(seen is not null)seen.NotifiedUtc=DateTime.UtcNow.ToString("O");
+                _state.Outbox.Remove(pending);
+            }
+            SaveLocked(false);
+        }
+    }
+    public void Requeue(long jobId,Listing item)
+    {
+        lock(_sync){var fp=BrowserScanner.Fingerprint(_state.Jobs.First(x=>x.Id==jobId).Platform,item);QueueLocked(jobId,fp,item);var seen=_state.SeenItems.FirstOrDefault(x=>x.Fingerprint==fp);if(seen is not null)seen.NotifiedUtc=null;SaveLocked();}
     }
     public EmailSettings GetEmail(){lock(_sync)return RoundTrip(_state.Email);}
     public void SaveEmail(EmailSettings value){lock(_sync){_state.Email=RoundTrip(value);SaveLocked();}}
@@ -122,6 +151,15 @@ public sealed class PortableState
     public WhatsAppSettings WhatsApp { get; set; }=new();
     public GeneralSettings General { get; set; }=new();
     public RuntimeStatistics Statistics { get; set; }=new();
+    public List<PendingDelivery> Outbox { get; set; }=[];
+}
+public sealed class PendingDelivery
+{
+    public long JobId {get;set;}
+    public string Fingerprint {get;set;}="";
+    public Listing Item {get;set;}=new("","","","");
+    public List<string> Targets {get;set;}=[];
+    public List<string> Delivered {get;set;}=[];
 }
 public sealed class PortableSeenItem
 {

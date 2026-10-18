@@ -21,7 +21,7 @@ public sealed partial class BrowserScanner : IAsyncDisposable
         var process=_edgeProcess;
         if(process is not null)try{if(!process.HasExited){process.Kill(true);await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(8));}}catch{}
     }
-    public bool IsRunning => _context is not null && _browser?.IsConnected==true && _edgeProcess is not null && !_edgeProcess.HasExited;
+    public bool IsRunning => _context is not null && _browser?.IsConnected==true;
 
     public async Task StartAsync(bool headless = true)
     {
@@ -29,6 +29,7 @@ public sealed partial class BrowserScanner : IAsyncDisposable
         if (IsRunning) return;
         var recovering=_context is not null||_edgeProcess is not null;
         await CloseAsync();
+        await CleanupProfileProcessesAsync();
         if(recovering)Diagnostic?.Invoke("Edge-Verbindung verloren · Browser wird automatisch neu gestartet.");
         var edge = BrowserFinder.FindEdge() ?? throw new InvalidOperationException("Microsoft Edge wurde nicht gefunden.");
         Directory.CreateDirectory(AppPaths.EdgeProfile);
@@ -278,11 +279,33 @@ async a => {
     }
     public async Task CloseAsync()
     {
+        var owned=_edgeProcess is not null||_browser is not null;
         if(_browser is not null){try{await _browser.CloseAsync().WaitAsync(TimeSpan.FromSeconds(8));}catch{} _browser=null;}
         _context=null;
         _playwright?.Dispose(); _playwright = null;
         await StopOwnedEdgeAsync();
+        if(owned)await CleanupProfileProcessesAsync();
         CleanDisposableCaches();
+    }
+    internal static async Task CleanupProfileProcessesAsync()
+    {
+        var profile=Path.GetFullPath(AppPaths.EdgeProfile).Replace("'","''");
+        var script="$p='"+profile+"'; $pattern='--user-data-dir=(?:\"'+[regex]::Escape($p)+'\"|'+[regex]::Escape($p)+'(?=\\s|$))'; Get-CimInstance Win32_Process -Filter \"Name='msedge.exe'\" | Where-Object { $_.CommandLine -and $_.CommandLine -match $pattern } | Select-Object -ExpandProperty ProcessId";
+        for(var attempt=0;attempt<=3;attempt++)
+        {
+            var start=new ProcessStartInfo("powershell.exe"){UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true};
+            start.ArgumentList.Add("-NoProfile");start.ArgumentList.Add("-NonInteractive");start.ArgumentList.Add("-Command");start.ArgumentList.Add(script);
+            using var query=Process.Start(start)??throw new InvalidOperationException("Edge-Prozessprüfung konnte nicht gestartet werden.");
+            var outputTask=query.StandardOutput.ReadToEndAsync();var errorTask=query.StandardError.ReadToEndAsync();
+            await query.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+            var output=await outputTask;var error=await errorTask;
+            if(query.ExitCode!=0)throw new InvalidOperationException("Edge-Prozessprüfung fehlgeschlagen: "+error);
+            var ids=output.Split(new[]{'\r','\n'},StringSplitOptions.RemoveEmptyEntries).Select(x=>int.TryParse(x.Trim(),out var pid)?pid:0).Where(x=>x>0).ToList();
+            if(ids.Count==0)return;
+            if(attempt==3)throw new InvalidOperationException("MarketWatcher-Edge-Prozesse konnten nicht vollständig beendet werden: "+string.Join(", ",ids));
+            foreach(var pid in ids)try{using var process=Process.GetProcessById(pid);process.Kill(true);await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));}catch(ArgumentException){}catch(InvalidOperationException){}
+            await Task.Delay(150);
+        }
     }
     private async Task StopOwnedEdgeAsync()
     {
