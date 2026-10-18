@@ -12,6 +12,7 @@ public partial class MainWindow : Window
 {
     private readonly Repository _repo; private readonly WatcherService _watcher; private readonly Forms.NotifyIcon _trayIcon; private bool _shutdownComplete; private bool _exitRequested;private BrowserWarningWindow? _browserWarning;
     private readonly System.Windows.Threading.DispatcherTimer _statusTimer;private bool _sidebarCollapsed;
+    private Forms.ToolStripMenuItem? _globalPauseItem;private bool _changingGlobalPause;
     public ObservableCollection<SearchJob> Searches { get; }=[]; public ObservableCollection<string> Logs { get; }=[];
     public MainWindow()
     {
@@ -28,6 +29,9 @@ public partial class MainWindow : Window
         _trayIcon=new Forms.NotifyIcon{Icon=File.Exists(iconPath)?new Drawing.Icon(iconPath):Drawing.SystemIcons.Application,Text="MarketWatcher läuft – Suchagent aktiv",Visible=true};
         var menu=new Forms.ContextMenuStrip();
         menu.Items.Add("MarketWatcher öffnen",null,(_,_)=>Dispatcher.Invoke(RestoreFromTray));
+        _globalPauseItem=new Forms.ToolStripMenuItem("Alle Suchen pausieren");
+        _globalPauseItem.Click+=(_,_)=>Dispatcher.BeginInvoke(new Action(ToggleGlobalPause));
+        menu.Items.Add(_globalPauseItem);menu.Opening+=(_,_)=>UpdateDashboard();
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("Beenden",null,(_,_)=>Dispatcher.Invoke(()=>{_exitRequested=true;Close();}));
         _trayIcon.ContextMenuStrip=menu;_trayIcon.DoubleClick+=(_,_)=>Dispatcher.Invoke(RestoreFromTray);
@@ -38,7 +42,7 @@ public partial class MainWindow : Window
         {
             try
             {
-                await _watcher.StartAsync();AgentStatus.Text="● Agent aktiv";
+                await _watcher.StartAsync();UpdateDashboard();
                 var automaticStart=Environment.GetCommandLineArgs().Any(x=>x.Equals("--autostart",StringComparison.OrdinalIgnoreCase));
                 if(_repo.RequiresReauthentication)MessageBox.Show("MarketWatcher wurde unter einem anderen Windows-Benutzer oder auf einem anderen Computer gestartet. Suchen und Ausschlussliste wurden übernommen. Bitte E-Mail-/Telegram-Zugangsdaten neu eingeben und WhatsApp Web per QR-Code neu anmelden.","Neue Windows-Umgebung erkannt");
                 if(automaticStart){WindowState=WindowState.Minimized;Hide();}
@@ -56,6 +60,22 @@ public partial class MainWindow : Window
         _statusTimer.Stop();_shutdownComplete=true;_trayIcon.Visible=false;_trayIcon.Dispose();Close();
     }
     private void RestoreFromTray(){Show();WindowState=WindowState.Normal;Activate();}
+    private async void ToggleGlobalPause()
+    {
+        if(_changingGlobalPause)return;
+        _changingGlobalPause=true;if(_globalPauseItem is not null)_globalPauseItem.Enabled=false;
+        try
+        {
+            if(!_watcher.IsGloballyPaused)await _watcher.PauseAllAsync();
+            else
+            {
+                var answer=MessageBox.Show("Alle neuen Einträge seit Beginn der Pause senden?\n\nJa = verpasste Treffer jetzt prüfen und melden\nNein = aktuellen Bestand still übernehmen; erst danach neue Treffer melden\nAbbrechen = global pausiert lassen","MarketWatcher fortsetzen",MessageBoxButton.YesNoCancel,MessageBoxImage.Question);
+                if(answer!=MessageBoxResult.Cancel)_watcher.ResumeAll(answer==MessageBoxResult.Yes);
+            }
+        }
+        catch(Exception ex){AddLog("Globale Pause / Fortsetzen: "+ex.Message);MessageBox.Show(ex.Message,"MarketWatcher");}
+        finally{_changingGlobalPause=false;if(_globalPauseItem is not null)_globalPauseItem.Enabled=true;UpdateDashboard();}
+    }
     private async void AddSearch_Click(object sender,RoutedEventArgs e)
     {
         if(!Uri.TryCreate(UrlBox.Text.Trim(),UriKind.Absolute,out var uri)||uri.Scheme is not("http" or "https")){MessageBox.Show("Bitte eine gültige Such-URL einfügen.");return;}
@@ -183,9 +203,16 @@ public partial class MainWindow : Window
     private void UpdateDashboard()
     {
         if(!IsInitialized)return;var jobs=_repo.GetJobs();var active=jobs.Where(x=>x.Enabled).ToList();ActiveSearchText.Text=$"{active.Count} von {jobs.Count}";
+        var paused=_repo.GetGeneral().GloballyPaused;
+        if(_globalPauseItem is not null)_globalPauseItem.Text=paused?"MarketWatcher fortsetzen …":"Alle Suchen pausieren";
+        if(_trayIcon is not null)_trayIcon.Text=paused?"MarketWatcher pausiert – alle Prüfungen gestoppt":"MarketWatcher läuft – Suchagent aktiv";
+        AgentStatus.Text=paused?"Ⅱ Global pausiert":"● Agent aktiv";SidebarAgentText.Text=paused?"Global pausiert":"Agent läuft";
+        HeaderAgentLabel.Text=SystemAgentLabel.Text=paused?"Global pausiert":"Agent läuft";
+        HeaderAgentLabel.Foreground=SystemAgentLabel.Foreground=paused?System.Windows.Media.Brushes.Goldenrod:new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(98,233,154));
         BrowserModeText.Text=_repo.GetGeneral().KeepBrowserOpen?active.Count>0?"Edge bleibt unsichtbar geöffnet":"Edge geschlossen · keine aktive Suche":"Edge wird nach jedem Lauf geschlossen";
         var last=jobs.Where(x=>x.LastRunUtc.HasValue).OrderByDescending(x=>x.LastRunUtc).FirstOrDefault();SystemLastRunText.Text=last is null?"Noch keine Prüfung":$"{last.LastRunLabel} · {last.Platform}";
         SystemOffersText.Text=$"{jobs.Sum(x=>x.SeenCount)} gespeicherte Treffer";var statistics=_repo.GetStatistics();SystemNotificationsText.Text=$"{statistics.SuccessfulNotifications} Treffer";SystemErrorsText.Text=statistics.Errors.ToString();SystemErrorsText.Foreground=statistics.Errors==0?new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(102,233,157)):new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(255,135,151));
+        if(paused){NextCheckText.Text="Global pausiert";BrowserModeText.Text="Edge geschlossen · globale Pause";return;}
         if(active.Count==0){NextCheckText.Text="Keine aktive Suche";return;}
         var wait=active.Select(x=>x.LastRunUtc is null?TimeSpan.Zero:TimeSpan.FromSeconds(x.IntervalSeconds)-(DateTime.UtcNow-x.LastRunUtc.Value)).Min();if(wait<TimeSpan.Zero)wait=TimeSpan.Zero;
         NextCheckText.Text=wait.TotalSeconds<1?"jetzt":wait.TotalMinutes>=1?$"in {(int)wait.TotalMinutes} Min. {wait.Seconds} Sek.":$"in {Math.Max(1,(int)Math.Ceiling(wait.TotalSeconds))} Sek.";

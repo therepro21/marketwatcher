@@ -78,7 +78,18 @@ public sealed class Repository(string stateFile)
     public WhatsAppSettings GetWhatsApp(){lock(_sync)return RoundTrip(_state.WhatsApp);}
     public void SaveWhatsApp(WhatsAppSettings value){lock(_sync){_state.WhatsApp=RoundTrip(value);SaveLocked();}}
     public GeneralSettings GetGeneral(){lock(_sync)return RoundTrip(_state.General);}
-    public void SaveGeneral(GeneralSettings value){lock(_sync){_state.General=RoundTrip(value);SaveLocked();}}
+    public void SaveGeneral(GeneralSettings value){lock(_sync){_state.General.KeepBrowserOpen=value.KeepBrowserOpen;SaveLocked();}}
+    public void SetGlobalPause(bool paused,bool includeMissed=true)
+    {
+        lock(_sync)
+        {
+            _state.General.GloballyPaused=paused;
+            _state.General.PausedSinceUtc=paused?DateTime.UtcNow:null;
+            if(!paused)foreach(var job in _state.Jobs.Where(x=>x.Enabled)){job.SkipBacklogOnce=!includeMissed;job.LastRunUtc=null;}
+            SaveLocked();
+        }
+    }
+    public void CompleteBacklogBaseline(long id)=>ChangeJob(id,x=>x.SkipBacklogOnce=false);
     public RuntimeStatistics GetStatistics(){lock(_sync)return RoundTrip(_state.Statistics);}
     public void RecordSuccessfulNotifications(int count){if(count<=0)return;lock(_sync){_state.Statistics.SuccessfulNotifications+=count;SaveLocked();}}
     public void RecordErrors(int count=1){if(count<=0)return;lock(_sync){_state.Statistics.Errors+=count;SaveLocked();}}

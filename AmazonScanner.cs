@@ -9,7 +9,7 @@ public sealed partial class BrowserScanner
         for(var attempt=1;;attempt++)
         {
             try{return await ScanAmazonCoreAsync(job);}
-            catch(Exception ex) when(attempt<3&&(ex is PlaywrightException||ex is InvalidOperationException)&&ex is not BrowserChallengeException)
+            catch(Exception ex) when(attempt<3&&!Suspended&&(ex is PlaywrightException||ex is InvalidOperationException)&&ex is not BrowserChallengeException)
             {
                 Diagnostic?.Invoke($"Amazon · Ladefehler · Versuch {attempt}/3 fehlgeschlagen: {ex.Message.Split('\n')[0]} · Seite wird erneut geöffnet.");
                 if(!IsRunning||ex.Message.Contains("has been closed",StringComparison.OrdinalIgnoreCase))await CloseAsync();

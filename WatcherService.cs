@@ -8,14 +8,35 @@ public sealed class WatcherService : IAsyncDisposable
     private readonly SemaphoreSlim _gate = new(1,1);private readonly SemaphoreSlim _wake = new(0,1); private Task? _loop;
     private System.Diagnostics.Process? _manualEdgeProcess;
     public WatcherService(Repository repo, Action<string> log, Action refresh){_repo=repo;_log=log;_refresh=refresh;_scanner.Diagnostic+=log;}
-    public Task StartAsync(){_loop=LoopAsync();return Task.CompletedTask;}
+    public bool IsGloballyPaused=>_repo.GetGeneral().GloballyPaused;
+    public Task StartAsync(){_scanner.Suspended=IsGloballyPaused;_loop=LoopAsync();return Task.CompletedTask;}
+    public async Task PauseAllAsync()
+    {
+        _repo.SetGlobalPause(true);NotifyScheduleChanged();_refresh();
+        await _scanner.SuspendAsync();
+        await _gate.WaitAsync();
+        try{await _scanner.CloseAsync();await CompleteManualInterventionCoreAsync();_log("MarketWatcher global pausiert · Edge geschlossen · Suchauswahl bleibt erhalten.");}
+        finally{_gate.Release();_refresh();}
+    }
+    public void ResumeAll(bool includeMissed)
+    {
+        _repo.SetGlobalPause(false,includeMissed);_scanner.Suspended=false;
+        _log(includeMissed?"MarketWatcher fortgesetzt · verpasste Treffer werden geprüft.":"MarketWatcher fortgesetzt · aktueller Bestand wird je aktiver Suche still übernommen.");
+        NotifyScheduleChanged();_refresh();
+    }
     private async Task LoopAsync()
     {
         while(!_stop.IsCancellationRequested)
         {
+            if(IsGloballyPaused)
+            {
+                try{await _wake.WaitAsync(_stop.Token);}catch(OperationCanceledException){break;}
+                continue;
+            }
             var jobs=_repo.GetJobs().Where(x=>x.Enabled).ToList();
             foreach(var j in jobs.Where(x=>x.LastRunUtc is null || DateTime.UtcNow-x.LastRunUtc.Value>=TimeSpan.FromSeconds(x.IntervalSeconds)))
                 await RunJobAsync(j.Id,false);
+            if(IsGloballyPaused)continue;
             // Sleep until work is actually due. UI changes signal _wake, so an
             // idle installation consumes no CPU through periodic polling.
             var enabled=_repo.GetJobs().Where(x=>x.Enabled).ToList();
@@ -39,11 +60,14 @@ public sealed class WatcherService : IAsyncDisposable
         var elapsed=System.Diagnostics.Stopwatch.StartNew();var reusedBrowser=_scanner.IsRunning;
         try
         {
+            if(IsGloballyPaused)return;
             var job=_repo.GetJob(id); if(job is null)return; _log($"SUCHE #{job.Id} · PORTAL: {job.Platform} · SUCHBEGRIFF: {job.Name} · Prüfung läuft …");
             if(job.Platform=="Amazon"){await RunAmazonAsync(job);return;}
-            var items=await _scanner.ScanAsync(job); var initial=!job.Initialized; var fresh=new List<Listing>();
+            var items=await _scanner.ScanAsync(job); var initial=!job.Initialized||job.SkipBacklogOnce; var fresh=new List<Listing>();
+            if(IsGloballyPaused)return;
             if(_repo.GetJob(id)?.Enabled!=true){_log($"{job.Name}: Prüfung abgebrochen, weil die Suche pausiert wurde.");return;}
             foreach(var item in items) if(_repo.AddSeen(job.Id,BrowserScanner.Fingerprint(job.Platform,item),item,!initial)) fresh.Add(item);
+            if(job.SkipBacklogOnce)_repo.CompleteBacklogBaseline(job.Id);
             if(initial){var now=DateTime.UtcNow;_repo.SetLastNewResult(job.Id,now);var status=$"PORTAL: {job.Platform} · SUCHBEGRIFF: {job.Name} · Basisbestand: {items.Count} Treffer";_repo.UpdateRun(job.Id,true,status);_log($"SUCHE #{job.Id} · {status}");}
             else if(fresh.Count==0){var since=FormatElapsed(DateTime.UtcNow-(job.LastNewResultUtc??job.LastRunUtc??DateTime.UtcNow));var status=$"PORTAL: {job.Platform} · SUCHBEGRIFF: {job.Name} · Seit {since} keine neuen Ergebnisse · {items.Count} aktuelle Treffer";_repo.UpdateRun(job.Id,true,status);_log($"SUCHE #{job.Id} · {status}");}
             else
@@ -54,11 +78,12 @@ public sealed class WatcherService : IAsyncDisposable
                 _log($"SUCHE #{job.Id} · {status}"+(errors.Count==0?"":$" · {string.Join(" | ",errors)}"));
             }
         }
+        catch(Exception) when(IsGloballyPaused){_log($"SUCHE #{id} · durch globale Pause beendet.");}
         catch(BrowserChallengeException ex){_repo.RecordErrors();var failed=_repo.GetJob(id);_repo.UpdateRun(id,true,$"PORTAL: {failed?.Platform??ex.Platform} · SUCHBEGRIFF: {failed?.Name??ex.SearchName} · Pausiert: {ex.Message}");_repo.SetEnabled(id,false);_log($"SUCHE #{id} · PORTAL: {ex.Platform} · SUCHBEGRIFF: {ex.SearchName} · {ex.Message}");ManualInterventionRequired?.Invoke(ex);}
         catch(Exception ex){_repo.RecordErrors();var failed=_repo.GetJob(id);_repo.UpdateRun(id,failed?.Initialized??false,$"PORTAL: {failed?.Platform??"Unbekannt"} · SUCHBEGRIFF: {failed?.Name??"Unbekannt"} · Fehler: {ex.Message}");_log($"SUCHE #{id} · PORTAL: {failed?.Platform??"Unbekannt"} · SUCHBEGRIFF: {failed?.Name??"Unbekannt"} · FEHLER: {ex.Message}");}
         finally
         {
-            var keepBrowser=_repo.GetGeneral().KeepBrowserOpen&&_repo.GetJobs().Any(x=>x.Enabled);
+            var keepBrowser=!IsGloballyPaused&&_repo.GetGeneral().KeepBrowserOpen&&_repo.GetJobs().Any(x=>x.Enabled);
             if(!keepBrowser)try{await _scanner.CloseAsync();}catch(Exception ex){_log("Browser konnte nicht vollständig geschlossen werden: "+ex.Message);}
             elapsed.Stop();_log($"SUCHE #{id} · Laufzeit {elapsed.Elapsed.TotalSeconds:0.0} Sek. · Edge {(reusedBrowser?keepBrowser?"wiederverwendet und bleibt geöffnet":"wiederverwendet und geschlossen":keepBrowser?"gestartet und bleibt unsichtbar geöffnet":"neu gestartet und geschlossen")}");
             _gate.Release();_refresh();
@@ -75,10 +100,10 @@ public sealed class WatcherService : IAsyncDisposable
     private async Task RunAmazonAsync(SearchJob job)
     {
         var observation=await _scanner.ScanAmazonAsync(job);
-        if(_repo.GetJob(job.Id)?.Enabled!=true)return;
+        if(IsGloballyPaused||_repo.GetJob(job.Id)?.Enabled!=true)return;
         if(job.Name.StartsWith("Amazon · ",StringComparison.Ordinal))_repo.UpdateAmazonTitle(job.Id,observation.Title);
         var evaluation=AmazonRules.Evaluate(job,observation);
-        if(evaluation.Alerts.Count>0)
+        if(evaluation.Alerts.Count>0&&!job.SkipBacklogOnce)
         {
             var listing=new Listing(AmazonRules.Asin(job.Url),observation.Title,job.Url,string.Join(" · ",evaluation.Alerts),observation.ImageUrl);
             var errors=await SendNotificationsAsync(job,[listing]);
@@ -87,11 +112,13 @@ public sealed class WatcherService : IAsyncDisposable
             _log($"SUCHE #{job.Id} · Amazon · {observation.Title} · {string.Join(" · ",evaluation.Alerts)}");
         }
         _repo.UpdateAmazonObservation(job.Id,evaluation.Conditions);
+        if(job.SkipBacklogOnce)_repo.CompleteBacklogBaseline(job.Id);
         _repo.UpdateRun(job.Id,true,"Amazon · "+evaluation.Summary);
         _log($"SUCHE #{job.Id} · Amazon · {evaluation.Summary}");
     }
     public async Task ResumeFromNowAsync(long id)
     {
+        if(IsGloballyPaused){_log("MarketWatcher ist global pausiert. Zuerst im Tray fortsetzen.");return;}
         if(!await _gate.WaitAsync(0)){_log("Ein Suchlauf ist bereits aktiv.");return;}
         try
         {
@@ -122,6 +149,7 @@ public sealed class WatcherService : IAsyncDisposable
     }
     public async Task OpenProfileAsync(string? url=null)
     {
+        if(IsGloballyPaused){_log("MarketWatcher ist global pausiert. Zuerst im Tray fortsetzen.");return;}
         await _gate.WaitAsync();
         try
         {
@@ -169,8 +197,11 @@ public sealed class WatcherService : IAsyncDisposable
     private async Task<List<string>> SendNotificationsAsync(SearchJob job,IReadOnlyList<Listing> items)
     {
         var errors=new List<string>();
+        if(IsGloballyPaused)return errors;
         try{await EmailSender.SendAsync(_repo.GetEmail(),job,items);}catch(Exception ex){errors.Add("E-Mail: "+ex.Message);}
+        if(IsGloballyPaused)return errors;
         try{var tg=_repo.GetTelegram();var selected=job.TelegramRecipientIds.Split(',',StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries).ToHashSet(StringComparer.OrdinalIgnoreCase);foreach(var recipient in tg.Recipients)recipient.Selected=selected.Contains(recipient.Id);await TelegramSender.SendAsync(tg,job,items);}catch(Exception ex){errors.Add("Telegram: "+ex.Message);}
+        if(IsGloballyPaused)return errors;
         try
         {
             var wa=_repo.GetWhatsApp();var selected=job.RecipientIds.Split(',',StringSplitOptions.RemoveEmptyEntries|StringSplitOptions.TrimEntries).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -181,6 +212,7 @@ public sealed class WatcherService : IAsyncDisposable
     }
     public async Task TestWhatsAppAsync(WhatsAppSettings settings)
     {
+        if(IsGloballyPaused)throw new InvalidOperationException("MarketWatcher ist global pausiert. Bitte zuerst im Tray fortsetzen.");
         await _gate.WaitAsync();
         try
         {

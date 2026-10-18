@@ -14,10 +14,18 @@ public sealed partial class BrowserScanner : IAsyncDisposable
     private IBrowserContext? _context;
     private Process? _edgeProcess;
     public event Action<string>? Diagnostic;
+    public bool Suspended { get; set; }
+    public async Task SuspendAsync()
+    {
+        Suspended=true;
+        var process=_edgeProcess;
+        if(process is not null)try{if(!process.HasExited){process.Kill(true);await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(8));}}catch{}
+    }
     public bool IsRunning => _context is not null && _browser?.IsConnected==true && _edgeProcess is not null && !_edgeProcess.HasExited;
 
     public async Task StartAsync(bool headless = true)
     {
+        if(Suspended)throw new OperationCanceledException("MarketWatcher ist global pausiert.");
         if (IsRunning) return;
         var recovering=_context is not null||_edgeProcess is not null;
         await CloseAsync();
@@ -64,7 +72,7 @@ public sealed partial class BrowserScanner : IAsyncDisposable
         for(var attempt=1;;attempt++)
         {
             try{return await ScanCoreAsync(job);}
-            catch(PlaywrightException) when(attempt<3)
+            catch(PlaywrightException) when(attempt<3&&!Suspended)
             {
                 Diagnostic?.Invoke($"SUCHE #{job.Id} · {job.Platform} · Ladefehler · Versuch {attempt}/3 · Seite wird neu geöffnet.");
                 await CloseAsync();

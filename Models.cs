@@ -5,6 +5,8 @@ namespace MarketWatcher;
 public sealed class GeneralSettings
 {
     public bool KeepBrowserOpen { get; set; } = true;
+    public bool GloballyPaused { get; set; }
+    public DateTime? PausedSinceUtc { get; set; }
 }
 
 public sealed class SearchJob
@@ -16,6 +18,7 @@ public sealed class SearchJob
     public int IntervalSeconds { get; set; } = 60;
     public bool Enabled { get; set; } = true;
     public bool Initialized { get; set; }
+    public bool SkipBacklogOnce { get; set; }
     public DateTime? LastRunUtc { get; set; }
     public DateTime? LastNewResultUtc { get; set; }
     public string Status { get; set; } = "Neu";
