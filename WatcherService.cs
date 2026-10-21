@@ -108,12 +108,18 @@ public sealed class WatcherService : IAsyncDisposable
         if(evaluation.Alerts.Count>0&&!job.SkipBacklogOnce)
         {
             var listing=new Listing(AmazonRules.Asin(job.Url),observation.Title,job.Url,string.Join(" · ",evaluation.Alerts),observation.ImageUrl);
-            var errors=await SendNotificationsAsync(job,[listing]);
-            if(errors.Count>0){_repo.RecordErrors(errors.Count);throw new InvalidOperationException(string.Join(" | ",errors));}
-            _repo.RecordSuccessfulNotifications(1);_repo.SetLastNewResult(job.Id,DateTime.UtcNow);
+            _repo.QueueAmazonNotification(job.Id,listing,evaluation.Conditions);
+            _repo.SetLastNewResult(job.Id,DateTime.UtcNow);
             _log($"SUCHE #{job.Id} · Amazon · {observation.Title} · {string.Join(" · ",evaluation.Alerts)}");
         }
-        _repo.UpdateAmazonObservation(job.Id,evaluation.Conditions);
+        else _repo.UpdateAmazonObservation(job.Id,evaluation.Conditions);
+        var pendingBefore=_repo.GetPending(job.Id).Count;
+        if(pendingBefore>0)
+        {
+            var errors=await SendQueuedAsync(job);
+            _repo.RecordSuccessfulNotifications(pendingBefore-_repo.GetPending(job.Id).Count);
+            if(errors.Count>0){_repo.RecordErrors(errors.Count);_log($"SUCHE #{job.Id} · Amazon · Versand zurückgehalten: "+string.Join(" | ",errors));}
+        }
         if(job.SkipBacklogOnce)_repo.CompleteBacklogBaseline(job.Id);
         _repo.UpdateRun(job.Id,true,"Amazon · "+evaluation.Summary);
         _log($"SUCHE #{job.Id} · Amazon · {evaluation.Summary}");
@@ -219,7 +225,26 @@ public sealed class WatcherService : IAsyncDisposable
                 {
                     var wa=_repo.GetWhatsApp();var recipient=wa.Recipients.FirstOrDefault(x=>x.Id==target[3..]&&x.Enabled);
                     if(!wa.Enabled||recipient is null)throw new InvalidOperationException("WhatsApp-Empfänger deaktiviert oder entfernt.");
-                    wa.Recipients=[recipient];recipient.Selected=true;await SendWhatsAppConfiguredAsync(wa,job,listings);
+                    delivery.Attempts.TryGetValue(target,out var attempt);
+                    if(attempt is not null&&!string.IsNullOrEmpty(attempt.MessageId))
+                    {
+                        if(attempt.NextAttemptUtc>DateTime.UtcNow)continue;
+                        var phone=new string(recipient.Number.Where(char.IsDigit).ToArray());
+                        var caption=wa.IncludeImages?NotificationText.BuildItem(job,delivery.Item):NotificationText.BuildChunks(job,listings,3000,false).Single();
+                        var confirmed=await _scanner.IsWhatsAppMessageConfirmedAsync(phone,attempt.MessageId,caption,wa.IncludeImages&&!string.IsNullOrWhiteSpace(delivery.Item.ImageUrl));
+                        if(!confirmed){_repo.FailDeliveryAttempt(delivery.Fingerprint,target,"Nachrichten-ID noch nicht bestätigt; Versand bleibt gesperrt.");errors.Add("WhatsApp: Status unklar, Wiederholung gesperrt.");continue;}
+                        _repo.ConfirmDelivery(delivery.Fingerprint,target);
+                        _log($"SUCHE #{job.Id} · bestehende WhatsApp-Nachrichten-ID bestätigt · keine erneute Sendung");
+                        continue;
+                    }
+                    if(attempt is not null&&!attempt.CanSend(DateTime.UtcNow))
+                    {
+                        if(attempt.Status is "Preparing" or "NeedsReview")errors.Add("WhatsApp: Versand zur Prüfung zurückgehalten; automatische Wiederholung gesperrt.");
+                        continue;
+                    }
+                    _repo.BeginDeliveryAttempt(delivery.Fingerprint,target);
+                    wa.Recipients=[recipient];recipient.Selected=true;
+                    await _scanner.SendWhatsAppAsync(wa,job,listings,id=>_repo.CheckpointMessageId(delivery.Fingerprint,target,id));
                 }
                 else if(target.StartsWith("tg:"))
                 {
@@ -231,7 +256,12 @@ public sealed class WatcherService : IAsyncDisposable
                 _repo.ConfirmDelivery(delivery.Fingerprint,target);
                 _log($"SUCHE #{job.Id} · Versand bestätigt · {target.Split(':')[0]} · {delivery.Item.Title}");
             }
-            catch(Exception ex){errors.Add(target.Split(':')[0]+": "+ex.Message);}
+            catch(Exception ex)
+            {
+                if(target.StartsWith("wa:")&&_repo.GetPending(job.Id).FirstOrDefault(x=>x.Fingerprint==delivery.Fingerprint)?.Attempts.ContainsKey(target)==true)
+                    _repo.FailDeliveryAttempt(delivery.Fingerprint,target,ex.Message);
+                errors.Add(target.Split(':')[0]+": "+ex.Message);
+            }
             }
         }
         return errors;

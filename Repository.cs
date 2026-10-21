@@ -17,6 +17,13 @@ public sealed class Repository(string stateFile)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(stateFile)!);Directory.CreateDirectory(AppPaths.BackupDirectory);
             _state=LoadState();
+            if(_state.WhatsAppDeliveryVersion<1)
+            {
+                foreach(var pending in _state.Outbox)
+                foreach(var target in pending.Targets.Where(x=>x.StartsWith("wa:")&&!pending.Delivered.Contains(x)))
+                    pending.Attempts[target]=new(){Status="NeedsReview",LastError="Alter Versandstatus unklar. Automatische Wiederholung gesperrt."};
+                _state.WhatsAppDeliveryVersion=1;
+            }
             foreach(var job in _state.Jobs.Where(x=>x.LastNewResultUtc is null))
             {
                 var seen=_state.SeenItems.Where(x=>x.JobId==job.Id).ToList();
@@ -82,11 +89,43 @@ public sealed class Repository(string stateFile)
         _state.Outbox.Add(new(){JobId=jobId,Fingerprint=fingerprint,Item=item,Targets=targets});
     }
     public List<PendingDelivery> GetPending(long jobId){lock(_sync)return RoundTrip(_state.Outbox.Where(x=>x.JobId==jobId).ToList());}
+    public void BeginDeliveryAttempt(string fingerprint,string target)
+    {
+        lock(_sync)
+        {
+            var pending=_state.Outbox.Single(x=>x.Fingerprint==fingerprint);
+            if(!pending.Attempts.TryGetValue(target,out var attempt))pending.Attempts[target]=attempt=new();
+            if(!attempt.CanSend(DateTime.UtcNow))throw new InvalidOperationException("Automatische Wiederholung gesperrt: "+attempt.Status);
+            attempt.Count++;attempt.Status="Preparing";attempt.NextAttemptUtc=null;SaveLocked(false);
+        }
+    }
+    public void CheckpointMessageId(string fingerprint,string target,string messageId)
+    {
+        if(string.IsNullOrWhiteSpace(messageId))throw new InvalidOperationException("WhatsApp-Nachrichten-ID fehlt.");
+        lock(_sync)
+        {
+            var pending=_state.Outbox.Single(x=>x.Fingerprint==fingerprint);
+            var attempt=pending.Attempts[target];attempt.MessageId=messageId;attempt.Status="AwaitingConfirmation";SaveLocked(false);
+        }
+    }
+    public void FailDeliveryAttempt(string fingerprint,string target,string detail)
+    {
+        lock(_sync)
+        {
+            var pending=_state.Outbox.Single(x=>x.Fingerprint==fingerprint);var attempt=pending.Attempts[target];
+            attempt.LastError=detail;
+            attempt.Status=!string.IsNullOrEmpty(attempt.MessageId)?"AwaitingConfirmation":attempt.Count>=3?"NeedsReview":"Retry";
+            attempt.NextAttemptUtc=DateTime.UtcNow.AddMinutes(Math.Pow(2,Math.Min(attempt.Count,5)));
+            SaveLocked(false);
+        }
+    }
     public void ConfirmDelivery(string fingerprint,string target)
     {
         lock(_sync)
         {
             var pending=_state.Outbox.FirstOrDefault(x=>x.Fingerprint==fingerprint);if(pending is null)return;
+            if(pending.Attempts.TryGetValue(target,out var attempt)&&!string.IsNullOrEmpty(attempt.MessageId)&&!_state.DeliveryReceipts.Any(x=>x.MessageId==attempt.MessageId&&x.Target==target))
+                _state.DeliveryReceipts.Add(new(){Fingerprint=fingerprint,Target=target,MessageId=attempt.MessageId,ConfirmedUtc=DateTime.UtcNow});
             if(!pending.Delivered.Contains(target))pending.Delivered.Add(target);
             if(pending.Targets.Count>0&&pending.Targets.All(pending.Delivered.Contains))
             {
@@ -99,6 +138,15 @@ public sealed class Repository(string stateFile)
     public void Requeue(long jobId,Listing item)
     {
         lock(_sync){var fp=BrowserScanner.Fingerprint(_state.Jobs.First(x=>x.Id==jobId).Platform,item);QueueLocked(jobId,fp,item);var seen=_state.SeenItems.FirstOrDefault(x=>x.Fingerprint==fp);if(seen is not null)seen.NotifiedUtc=null;SaveLocked();}
+    }
+    public void QueueAmazonNotification(long jobId,Listing item,Dictionary<string,bool> conditions)
+    {
+        lock(_sync)
+        {
+            QueueLocked(jobId,"amazon-event-"+Guid.NewGuid().ToString("N"),item);
+            _state.Jobs.Single(x=>x.Id==jobId).AmazonConditions=conditions;
+            SaveLocked();
+        }
     }
     public EmailSettings GetEmail(){lock(_sync)return RoundTrip(_state.Email);}
     public void SaveEmail(EmailSettings value){lock(_sync){_state.Email=RoundTrip(value);SaveLocked();}}
@@ -152,6 +200,15 @@ public sealed class PortableState
     public GeneralSettings General { get; set; }=new();
     public RuntimeStatistics Statistics { get; set; }=new();
     public List<PendingDelivery> Outbox { get; set; }=[];
+    public int WhatsAppDeliveryVersion { get; set; }
+    public List<ConfirmedDelivery> DeliveryReceipts {get;set;}=[];
+}
+public sealed class ConfirmedDelivery
+{
+    public string Fingerprint {get;set;}="";
+    public string Target {get;set;}="";
+    public string MessageId {get;set;}="";
+    public DateTime ConfirmedUtc {get;set;}
 }
 public sealed class PendingDelivery
 {
@@ -160,6 +217,16 @@ public sealed class PendingDelivery
     public Listing Item {get;set;}=new("","","","");
     public List<string> Targets {get;set;}=[];
     public List<string> Delivered {get;set;}=[];
+    public Dictionary<string,DeliveryAttempt> Attempts {get;set;}=new();
+}
+public sealed class DeliveryAttempt
+{
+    public string Status {get;set;}="Ready";
+    public int Count {get;set;}
+    public string MessageId {get;set;}="";
+    public DateTime? NextAttemptUtc {get;set;}
+    public string LastError {get;set;}="";
+    public bool CanSend(DateTime utc)=>string.IsNullOrEmpty(MessageId)&&(Status is "Ready" or "Retry")&&Count<3&&(!NextAttemptUtc.HasValue||utc>=NextAttemptUtc.Value);
 }
 public sealed class PortableSeenItem
 {

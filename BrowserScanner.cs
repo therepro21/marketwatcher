@@ -151,7 +151,7 @@ public sealed partial class BrowserScanner : IAsyncDisposable
         return collected.Values.Take(500).ToList();
     }
 
-    public async Task SendWhatsAppAsync(WhatsAppSettings settings, SearchJob job, IReadOnlyList<Listing> items)
+    public async Task SendWhatsAppAsync(WhatsAppSettings settings, SearchJob job, IReadOnlyList<Listing> items,Action<string>? beforeDispatch=null)
     {
         if (!settings.Enabled) return;
         var recipients = settings.Recipients.Count>0
@@ -163,6 +163,7 @@ public sealed partial class BrowserScanner : IAsyncDisposable
         var page = await _context!.NewPageAsync();
         try
         {
+            await page.ExposeFunctionAsync("marketwatcherBeforeSend",(string id)=>{beforeDispatch?.Invoke(id);});
             var deliveryErrors=new List<string>();
             foreach(var recipient in recipients)
             {
@@ -178,13 +179,13 @@ public sealed partial class BrowserScanner : IAsyncDisposable
                         foreach(var item in items)
                         {
                             var caption=NotificationText.BuildItem(job,item);
-                            if(string.IsNullOrWhiteSpace(item.ImageUrl)){await SendWhatsAppTextAsync(page,composer,caption);continue;}
+                            if(string.IsNullOrWhiteSpace(item.ImageUrl)){await SendWhatsAppTextAsync(page,caption,recipient.Phone);continue;}
                             await SendWhatsAppImageAsync(page,item.ImageUrl,item.Url,caption,recipient.Phone);
                         }
                     }
                     else foreach (var message in NotificationText.BuildChunks(job, items, 3000,false))
                     {
-                        await SendWhatsAppTextAsync(page,composer,message);
+                        await SendWhatsAppTextAsync(page,message,recipient.Phone);
                     }
                 }
                 catch(Exception ex){deliveryErrors.Add($"{recipient.Name} ({recipient.Phone}): {ex.Message}");}
@@ -194,15 +195,10 @@ public sealed partial class BrowserScanner : IAsyncDisposable
         finally { await page.CloseAsync(); }
     }
 
-    private static async Task SendWhatsAppTextAsync(IPage page,ILocator composer,string message)
+    private static async Task SendWhatsAppTextAsync(IPage page,string message,string phone)
     {
-        var verificationText=VerificationText(message);
-        var sentMessages=page.Locator("[data-testid='msg-container'],div.message-out").Filter(new(){HasText=verificationText});
-        var before=await sentMessages.CountAsync();
-        await composer.FillAsync(message);var send=page.Locator("button[aria-label='Senden'],button[aria-label='Send']").Last;
-        await send.WaitForAsync(new(){State=WaitForSelectorState.Visible,Timeout=10000});await send.ClickAsync(new(){Force=true});
-        for(var attempt=0;attempt<20;attempt++){await page.WaitForTimeoutAsync(500);if(string.IsNullOrEmpty((await composer.InnerTextAsync()).Trim())&&await sentMessages.CountAsync()>before)return;}
-        throw new InvalidOperationException("WhatsApp Web hat die Textnachricht nicht bestätigt.");
+        var id=await page.EvaluateAsync<string>(WhatsAppMediaWithCaptionScript,new{data=(string?)null,mime="",filename="",caption=message,chatId=phone+"@c.us"});
+        await WaitForWhatsAppReceiptAsync(page,id,message,false);
     }
     private async Task SendWhatsAppImageAsync(IPage page,string imageUrl,string referer,string caption,string phone)
     {
@@ -218,28 +214,22 @@ public sealed partial class BrowserScanner : IAsyncDisposable
         finally{await imagePage.CloseAsync();}
         if(bytes.Length==0)throw new InvalidOperationException("Anzeigenfoto war leer.");
         var extension=contentType switch{"image/png"=>".png","image/webp"=>".webp","image/gif"=>".gif",_=>".jpg"};
-        var verificationText=VerificationText(caption);
-        var combinedMessages=page.Locator("[data-testid='msg-container'],div.message-out").Filter(new(){HasText=verificationText});
-        var before=await combinedMessages.CountAsync();
-        await page.EvaluateAsync<string>(WhatsAppMediaWithCaptionScript,new
+        var id=await page.EvaluateAsync<string>(WhatsAppMediaWithCaptionScript,new
         {
             data=Convert.ToBase64String(bytes),mime=contentType,filename="anzeige"+extension,caption,
             chatId=phone+"@c.us"
         });
-        for(var attempt=0;attempt<30;attempt++)
-        {
-            await page.WaitForTimeoutAsync(500);
-            if(await combinedMessages.CountAsync()>before&&await combinedMessages.Last.Locator("img").CountAsync()>0)return;
-        }
-        throw new InvalidOperationException("WhatsApp Web hat Foto und Text nicht als gemeinsame Nachricht bestätigt.");
+        await WaitForWhatsAppReceiptAsync(page,id,caption,true);
     }
 
     private const string WhatsAppMediaWithCaptionScript="""
 async a => {
+ let mediaData;
+ if(a.data){
  const binary=atob(a.data),buffer=new ArrayBuffer(binary.length),view=new Uint8Array(buffer);for(let i=0;i<binary.length;i++)view[i]=binary.charCodeAt(i);
  const file=new File([new Blob([buffer],{type:a.mime})],a.filename,{type:a.mime,lastModified:Date.now()});
  const OpaqueData=window.require('WAWebMediaOpaqueData');const opaque=await OpaqueData.createFromData(file,a.mime);
- const prep=window.require('WAWebPrepRawMedia').prepRawMedia(opaque,{});const mediaData=await prep.waitForPrep();
+ const prep=window.require('WAWebPrepRawMedia').prepRawMedia(opaque,{});mediaData=await prep.waitForPrep();
  const mediaObject=window.require('WAWebMediaStorage').getOrCreateMediaObject(mediaData.filehash);
  const mediaType=window.require('WAWebMmsMediaTypes').msgToMediaType({type:mediaData.type,isGif:mediaData.isGif,isNewsletter:false});
  if(!(mediaData.mediaBlob instanceof OpaqueData))mediaData.mediaBlob=await OpaqueData.createFromData(mediaData.mediaBlob,mediaData.mediaBlob.type);
@@ -247,11 +237,16 @@ async a => {
  if(window.require('WAWebMediaDataUtils').shouldUseMediaCache(window.require('WAWebMmsMediaTypes').castToV4(mediaObject.type))){const formData=mediaData.mediaBlob.formData();window.require('WAWebMediaInMemoryBlobCache').InMemoryMediaBlobCache.put(mediaObject.filehash,formData);}
  const uploaded=await window.require('WAWebMediaMmsV4Upload').uploadMedia({mimetype:mediaData.mimetype,mediaObject,mediaType});const e=uploaded.mediaEntry;if(!e)throw new Error('upload failed');
  mediaData.set({clientUrl:e.mmsUrl,deprecatedMms3Url:e.deprecatedMms3Url,directPath:e.directPath,mediaKey:e.mediaKey,mediaKeyTimestamp:e.mediaKeyTimestamp,filehash:mediaObject.filehash,encFilehash:e.encFilehash,uploadhash:e.uploadHash,size:mediaObject.size,streamingSidecar:e.sidecar,firstFrameSidecar:e.firstFrameSidecar,mediaHandle:null});mediaData.caption=a.caption;
+ }
  const wid=window.require('WAWebWidFactory').createWid(a.chatId);const chat=window.require('WAWebCollections').Chat.get(wid)||(await window.require('WAWebFindChatAction').findOrCreateLatestChat(wid))?.chat;if(!chat)throw new Error('chat missing');
  const {getMaybeMeLidUser,getMaybeMePnUser}=window.require('WAWebUserPrefsMeUser');const from=chat.id.isLid()?getMaybeMeLidUser():getMaybeMePnUser();const newId=await window.require('WAWebMsgKey').newId();
  const key=new (window.require('WAWebMsgKey'))({from,to:chat.id,id:newId,selfDir:'out'});const eph=window.require('WAWebGetEphemeralFieldsMsgActionsUtils').getEphemeralFields(chat);
- const msg={id:key,ack:0,body:mediaData.preview,from,to:chat.id,local:true,self:'out',t:Math.floor(Date.now()/1000),isNewMsg:true,type:'chat',...eph,...mediaData,...mediaData.toJSON()};if(msg.__x_id)delete msg.__x_id;
- const [msgPromise,sendPromise]=window.require('WAWebSendMsgChatAction').addAndSendMsgToChat(chat,msg);await msgPromise;await sendPromise;return key._serialized||key.$1||'sent';
+ const msg={id:key,ack:0,body:mediaData?mediaData.preview:a.caption,from,to:chat.id,local:true,self:'out',t:Math.floor(Date.now()/1000),isNewMsg:true,type:'chat',...eph,...mediaData,...(mediaData?mediaData.toJSON():{})};if(msg.__x_id)delete msg.__x_id;
+ const id=key._serialized||key.$1;if(!id)throw new Error('Message ID missing before dispatch');
+ await window.marketwatcherBeforeSend(id);
+ const [msgPromise,sendPromise]=window.require('WAWebSendMsgChatAction').addAndSendMsgToChat(chat,msg);
+ await Promise.race([Promise.all([msgPromise,sendPromise]),new Promise((_,reject)=>setTimeout(()=>reject(new Error('WhatsApp acknowledgement timeout; verify message ID')),30000))]);
+ return id;
 }
 """;
 
@@ -259,18 +254,6 @@ async a => {
         new WhatsAppSettings { Enabled=true, SendToFirst=settings.SendToFirst, RecipientName=settings.RecipientName, RecipientNumber=settings.RecipientNumber, SendToSecond=settings.SendToSecond, Recipient2Name=settings.Recipient2Name, Recipient2Number=settings.Recipient2Number },
         new SearchJob { Name="Testsuche", Platform="MarketWatcher" },
         [new Listing("test", "Testnachricht erfolgreich", "https://example.com", "")]);
-    private static int CountOccurrences(string source,string value)
-    {
-        if(string.IsNullOrEmpty(value))return 0;var count=0;var index=0;
-        while((index=source.IndexOf(value,index,StringComparison.Ordinal))>=0){count++;index+=value.Length;}
-        return count;
-    }
-    private static string Normalize(string value)=>System.Text.RegularExpressions.Regex.Replace(value,"\\s+"," ").Trim();
-    private static string VerificationText(string value)
-    {
-        var normalized=Normalize(value);var first=normalized.TakeWhile(c=>!char.IsLetterOrDigit(c)).Count();
-        return first<0?normalized:normalized[first..];
-    }
 
     public static string Fingerprint(string platform, Listing x)
     {
